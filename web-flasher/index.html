@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CYD Snapmaker Screen Installer</title>
+    <style>
+        body {
+            background-color: #0f1115;
+            color: #ffffff;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            text-align: center;
+        }
+        .container {
+            background-color: #161B22;
+            padding: 40px;
+            border-radius: 12px;
+            border: 2px solid #00E5FF;
+            box-shadow: 0 0 20px rgba(0, 229, 255, 0.2);
+            max-width: 500px;
+        }
+        h1 {
+            color: #00E5FF;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin-top: 0;
+        }
+        p {
+            color: #888888;
+            line-height: 1.5;
+            margin-bottom: 30px;
+            font-family: sans-serif;
+        }
+        esp-web-install-button {
+            display: block;
+            margin: 20px auto;
+        }
+        .footer {
+            margin-top: 20px;
+            font-size: 12px;
+            color: #555;
+        }
+    </style>
+    <!-- This script pulls the official ESP Web Tools logic -->
+    <script type="module" src="https://unpkg.com/esp-web-tools@9.0.1/dist/web/install-button.js?module"></script>
+</head>
+<body>
+
+    <div class="container">
+        <h1>CYD Snapmaker Screen</h1>
+        <p>Connect your Cheap Yellow Display (CYD ESP32-32E) to your computer via USB. Make sure you are using a data-capable cable, close any open slicers or serial monitors, and click the button below to install the custom firmware.</p>
+        
+        <!-- The Magic Button -->
+        <esp-web-install-button manifest="manifest.json"></esp-web-install-button>
+        
+        <div class="footer">
+            v1.0 Firmware by Nates Print Shop
+        </div>
+    </div>
+
+</body>
+</html>
