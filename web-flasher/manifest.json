@@ -1,6 +1,7 @@
 {
   "name": "CYD Snapmaker Screen",
   "version": "1.0",
+  "new_install_prompt_erase": true,
   "builds": [
     {
       "chipFamily": "ESP32",
