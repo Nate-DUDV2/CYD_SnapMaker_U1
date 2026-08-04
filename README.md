@@ -2,7 +2,7 @@
 
 A custom, standalone touchscreen firmware for the Snapmaker U1 (or any Klipper/Moonraker printer) using the "Cheap Yellow Display" (CYD) ESP32 board. 
 
-I built this because I wanted a dedicated, physical screen for my printer without having to deal with the overhead of a Raspberry Pi screen. This firmware talks directly to Moonraker's API to give you live stats, temperature control, toolhead management, and file launching—all from a $10 screen.
+I built this because I wanted a dedicated, physical screen for my printer without having to deal with the overhead of a Raspberry Pi screen. This firmware talks directly to Moonraker's API to give you live stats, temperature control, toolhead management, and file launching—all from a $15 screen.
 
 **By Nate's Print Shop**
 
