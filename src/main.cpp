@@ -809,12 +809,20 @@ void loop() {
             int r = i / 2;
             int c = i % 2;
             int bx = 60 + c * 130;
-            int by = 55 + r * 70;
-            if (touchX > bx && touchX < bx + 110 && touchY > by && touchY < by + 50) {
+            int by = 50 + r * 60;
+            if (touchX > bx && touchX < bx + 110 && touchY > by && touchY < by + 45) {
                sendGcode("T" + String(i));
                showToast("Tool Change", "Swapped to T" + String(i+1));
                closedModal = true; handledTouch = true; break;
             }
+          }
+          // Handle the new "None" button using Snapmaker Park Macro
+          if (!handledTouch && touchX > 60 && touchX < 300 && touchY > 180 && touchY < 220) {
+             // Figure out which tool is currently active so we can park it
+             String parkCmd = (activeTool <= 0) ? "park_extruder" : "park_extruder" + String(activeTool);
+             sendGcode(parkCmd); 
+             showToast("Tool Change", "Parking Tool");
+             closedModal = true; handledTouch = true;
           }
           if (!handledTouch) closedModal = true;
         }
@@ -841,15 +849,28 @@ void loop() {
             }
           }
           else if (touchY > 140 && touchY < 175) {
+            // Build the exact Snapmaker Klipper macros
+            String toolName = (tIdx == 0) ? "extruder" : "extruder" + String(tIdx);
+            String pickCmd = (tIdx == 0) ? "pick_extruder" : "pick_extruder" + String(tIdx);
+            String parkCmd = (tIdx == 0) ? "park_extruder" : "park_extruder" + String(tIdx);
+
             if (touchX > 50 && touchX < 170) {
-              if (toolAttached[tIdx]) { sendGcode("DETACH"); showToast("Tool", "Detaching..."); }
-              else { sendGcode("ATTACH"); showToast("Tool", "Attaching..."); }
+              // ATTACH / DETACH using Snapmaker native Pick/Park commands
+              if (toolAttached[tIdx]) { sendGcode(parkCmd); showToast("Tool", "Parking..."); }
+              else { sendGcode(pickCmd); showToast("Tool", "Attaching T" + String(tIdx+1)); }
               toolAttached[tIdx] = !toolAttached[tIdx];
               drawToolModal(tIdx);
               handledTouch = true;
             } else if (touchX > 180 && touchX < 300) {
-              if (toolLoaded[tIdx]) { sendGcode("UNLOAD_FILAMENT"); showToast("Filament", "Unloading T" + String(tIdx+1)); }
-              else { sendGcode("LOAD_FILAMENT"); showToast("Filament", "Loading T" + String(tIdx+1)); }
+              // LOAD / UNLOAD using Snapmaker native feeding sequence
+              if (toolLoaded[tIdx]) { 
+                sendGcode(pickCmd + "\nACTIVATE_EXTRUDER EXTRUDER=" + toolName + "\nINNER_FILAMENT_UNLOAD"); 
+                showToast("Filament", "Unloading T" + String(tIdx+1)); 
+              }
+              else { 
+                sendGcode(pickCmd + "\nACTIVATE_EXTRUDER EXTRUDER=" + toolName + "\nAUTO_FEEDING EXTRUDER=" + String(tIdx) + " LOAD=1"); 
+                showToast("Filament", "Loading T" + String(tIdx+1)); 
+              }
               toolLoaded[tIdx] = !toolLoaded[tIdx];
               drawToolModal(tIdx);
               handledTouch = true;
@@ -1070,13 +1091,16 @@ void loop() {
           if (touchX > 240 && touchX < 290) moveDist = 50.0;
           drawMoveTab(); 
         } else {
-          if (touchX > 125 && touchX < 165 && touchY > 90 && touchY < 130) { sendGcode("G91\nG1 Y" + String(moveDist) + " F6000\nG90"); showToast("Jog", "Y+ " + String(moveDist)); }
-          if (touchX > 125 && touchX < 165 && touchY > 190 && touchY < 230) { sendGcode("G91\nG1 Y-" + String(moveDist) + " F6000\nG90"); showToast("Jog", "Y- " + String(moveDist)); }
-          if (touchX > 75 && touchX < 115 && touchY > 140 && touchY < 180) { sendGcode("G91\nG1 X-" + String(moveDist) + " F6000\nG90"); showToast("Jog", "X- " + String(moveDist)); }
-          if (touchX > 175 && touchX < 215 && touchY > 140 && touchY < 180) { sendGcode("G91\nG1 X" + String(moveDist) + " F6000\nG90"); showToast("Jog", "X+ " + String(moveDist)); }
-          if (touchX > 125 && touchX < 165 && touchY > 140 && touchY < 180) { sendGcode("G28 X Y"); showToast("Homing", "X and Y axis"); }
-          if (touchX > 240 && touchX < 290 && touchY > 90 && touchY < 130) { sendGcode("G91\nG1 Z" + String(moveDist) + " F600\nG90"); showToast("Jog", "Z+ " + String(moveDist)); }
-          if (touchX > 240 && touchX < 290 && touchY > 190 && touchY < 230) { sendGcode("G91\nG1 Z-" + String(moveDist) + " F600\nG90"); showToast("Jog", "Z- " + String(moveDist)); }
+          // Perfectly aligned touch boundaries matching the UI boxes
+          if (touchX > 120 && touchX < 160 && touchY > 80 && touchY < 120) { sendGcode("G91\nG1 Y" + String(moveDist) + " F6000\nG90"); showToast("Jog", "Y+ " + String(moveDist)); }
+          if (touchX > 120 && touchX < 160 && touchY > 180 && touchY < 220) { sendGcode("G91\nG1 Y-" + String(moveDist) + " F6000\nG90"); showToast("Jog", "Y- " + String(moveDist)); }
+          if (touchX > 70 && touchX < 110 && touchY > 130 && touchY < 170) { sendGcode("G91\nG1 X-" + String(moveDist) + " F6000\nG90"); showToast("Jog", "X- " + String(moveDist)); }
+          if (touchX > 170 && touchX < 210 && touchY > 130 && touchY < 170) { sendGcode("G91\nG1 X" + String(moveDist) + " F6000\nG90"); showToast("Jog", "X+ " + String(moveDist)); }
+          if (touchX > 120 && touchX < 160 && touchY > 130 && touchY < 170) { sendGcode("G28"); showToast("Homing", "All Axes"); }
+          
+          if (touchX > 235 && touchX < 285 && touchY > 80 && touchY < 120) { sendGcode("G91\nG1 Z" + String(moveDist) + " F600\nG90"); showToast("Jog", "Z+ " + String(moveDist)); }
+          if (touchX > 235 && touchX < 285 && touchY > 130 && touchY < 170) { sendGcode("G28 Z"); showToast("Homing", "Z axis"); }
+          if (touchX > 235 && touchX < 285 && touchY > 180 && touchY < 220) { sendGcode("G91\nG1 Z-" + String(moveDist) + " F600\nG90"); showToast("Jog", "Z- " + String(moveDist)); }
         }
       }
       else if (currentTab == 3) {
@@ -1393,17 +1417,20 @@ void drawActiveToolModal() {
     int r = i / 2;
     int c = i % 2;
     int x = 60 + c * 130;
-    int y = 55 + r * 70;
+    int y = 50 + r * 60;
     
-    tft.fillRoundRect(x, y, 110, 50, 6, CARD_COLOR);
-    tft.drawRoundRect(x, y, 110, 50, 6, ACCENT_CYAN);
+    tft.fillRoundRect(x, y, 110, 45, 6, CARD_COLOR);
+    tft.drawRoundRect(x, y, 110, 45, 6, ACCENT_CYAN);
     
     tft.setTextColor(TFT_WHITE, CARD_COLOR);
-    tft.drawString("Tool " + String(i + 1), x + 55, y + 25, 2);
+    tft.drawString("Tool " + String(i + 1), x + 55, y + 22, 2);
   }
   
-  tft.setTextColor(TEXT_GRAY, BG_COLOR);
-  tft.drawString("Tap anywhere else to cancel", 42 + 278/2, 230, 1);
+   // New "None" Detach Button
+  tft.fillRoundRect(60, 180, 240, 40, 6, BTN_RED);
+  tft.setTextColor(TFT_WHITE, BTN_RED);
+  tft.drawString("None", 42 + 278/2, 200, 2); 
+  
   tft.setTextDatum(TL_DATUM);
 }
 
@@ -1642,7 +1669,9 @@ void drawMoveTab() {
   tft.fillRoundRect(120, 180, 40, 40, 6, CARD_COLOR); tft.drawString("Y-", 140, 200, 2);
   tft.fillRoundRect(70, 130, 40, 40, 6, CARD_COLOR); tft.drawString("X-", 90, 150, 2);
   tft.fillRoundRect(170, 130, 40, 40, 6, CARD_COLOR); tft.drawString("X+", 190, 150, 2);
+  
   tft.fillRoundRect(235, 80, 50, 40, 6, CARD_COLOR); tft.drawString("Z+", 260, 100, 2);
+  tft.fillRoundRect(235, 130, 50, 40, 6, CARD_COLOR); tft.drawString("HZ", 260, 150, 2); // Home Z
   tft.fillRoundRect(235, 180, 50, 40, 6, CARD_COLOR); tft.drawString("Z-", 260, 200, 2);
   tft.setTextDatum(TL_DATUM);
 }
