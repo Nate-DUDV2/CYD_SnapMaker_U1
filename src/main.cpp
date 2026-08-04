@@ -691,18 +691,24 @@ void setup() {
   WiFiManager wm;
   wm.setSaveConfigCallback(saveConfigCallback);
   
-  // Set the callback that updates the screen if Wi-Fi setup is needed
+  /// Set the callback that updates the screen if Wi-Fi setup is needed
   wm.setAPCallback(configModeCallback);
   
   WiFiManagerParameter custom_ip("printer_ip", "U1 IP Address", printerIP, 32);
+  WiFiManagerParameter custom_name("printer_name", "Printer Name", printerName, 32);
+
   wm.addParameter(&custom_ip);
+  wm.addParameter(&custom_name);
 
   // drawBootLogo() acts as the visual wait screen for this
   if (!wm.autoConnect("Snapmaker-U1-Display")) ESP.restart();
   
   if (shouldSaveConfig) {
     strcpy(printerIP, custom_ip.getValue());
+    strcpy(printerName, custom_name.getValue());
     preferences.putString("printer_ip", printerIP);
+    preferences.putString("printer_name", printerName);
+    
   }
 
   if (MDNS.begin(mdnsName)) Serial.println("mDNS started");
