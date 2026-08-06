@@ -1186,8 +1186,8 @@ void loop() {
            }
         }
       }
-      else if (currentTab == 4) {
-        if (touchX > 48 && touchX < 314 && touchY > 125 && touchY < 165) {
+     else if (currentTab == 4) {
+        if (touchX > 48 && touchX < 178 && touchY > 125 && touchY < 165) { 
             kbInput = String(printerIP);
             kbMode = 2; // IP Mode
             activeModal = 50; 
