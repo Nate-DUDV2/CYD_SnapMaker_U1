@@ -36,8 +36,8 @@ bool shouldSaveConfig = false;
 bool sdCardReady = false;
 uint64_t sdCardTotal = 0;
 uint64_t sdCardUsed = 0;
-bool invertDisplay = false; // NEW: Display inversion tracking
-unsigned long blockSyncUntil = 0; // NEW: Klipper sync lockout timer
+bool invertDisplay = false; 
+unsigned long blockSyncUntil = 0; 
 
 // --- STATE VARIABLES ---
 unsigned long lastUpdate = 0;
@@ -107,12 +107,21 @@ bool isCalibrated = false;
 
 File fsUploadFile;
 
-// --- UI COLORS ---
-#define BG_COLOR tft.color565(15, 17, 21)        
-#define SIDEBAR_COLOR tft.color565(22, 27, 34)  
-#define CARD_COLOR tft.color565(26, 29, 36)     
-#define TEXT_GRAY tft.color565(136, 136, 136)   
-#define ACCENT_CYAN tft.color565(0, 229, 255)   
+// --- UI COLORS & THEME ENGINE ---
+uint16_t BG_COLOR;
+uint16_t SIDEBAR_COLOR;
+uint16_t CARD_COLOR;
+uint16_t TEXT_GRAY;
+uint16_t ACCENT_CYAN;
+
+int currentTheme = 0; // 0=Dark, 1=Light, 2=Cyberpunk, 3=Retro, 4=Custom
+String customBG = "#0F1115";
+String customSidebar = "#161B22";
+String customCard = "#1A1D24";
+String customText = "#888888";
+String customAccent = "#00E5FF";
+
+// Buttons remain fixed colors for intuitive interaction
 #define BTN_BLUE tft.color565(30, 80, 150)
 #define BTN_GREEN tft.color565(40, 120, 60)
 #define BTN_RED tft.color565(150, 50, 50)       
@@ -153,6 +162,7 @@ void drawToast();
 void drawBootLogo();
 void configModeCallback(WiFiManager *myWiFiManager);
 String urlEncode(String str);
+void applyTheme();
 
 // --- HELPER FUNCTIONS ---
 uint16_t hexToRGB565(String hex) {
@@ -172,6 +182,41 @@ String rgb565ToHex(uint16_t color) {
   char hex[8];
   sprintf(hex, "#%02X%02X%02X", r, g, b);
   return String(hex);
+}
+
+// --- THEME APPLY ENGINE ---
+void applyTheme() {
+    if (currentTheme == 0) { // Dark Mode (Default)
+        BG_COLOR = tft.color565(15, 17, 21);
+        SIDEBAR_COLOR = tft.color565(22, 27, 34);
+        CARD_COLOR = tft.color565(26, 29, 36);
+        TEXT_GRAY = tft.color565(136, 136, 136);
+        ACCENT_CYAN = tft.color565(0, 229, 255);
+    } else if (currentTheme == 1) { // Light Mode
+        BG_COLOR = tft.color565(230, 235, 240);
+        SIDEBAR_COLOR = tft.color565(200, 205, 215);
+        CARD_COLOR = tft.color565(255, 255, 255);
+        TEXT_GRAY = tft.color565(80, 80, 80);
+        ACCENT_CYAN = tft.color565(0, 150, 255);
+    } else if (currentTheme == 2) { // Cyberpunk
+        BG_COLOR = tft.color565(11, 10, 16);
+        SIDEBAR_COLOR = tft.color565(21, 10, 33);
+        CARD_COLOR = tft.color565(34, 15, 50);
+        TEXT_GRAY = tft.color565(255, 0, 153); 
+        ACCENT_CYAN = tft.color565(0, 255, 255); 
+    } else if (currentTheme == 3) { // Retro Terminal
+        BG_COLOR = tft.color565(15, 15, 15);
+        SIDEBAR_COLOR = tft.color565(25, 25, 25);
+        CARD_COLOR = tft.color565(30, 30, 30);
+        TEXT_GRAY = tft.color565(255, 176, 0); 
+        ACCENT_CYAN = tft.color565(50, 255, 50); 
+    } else if (currentTheme == 4) { // Custom
+        BG_COLOR = hexToRGB565(customBG);
+        SIDEBAR_COLOR = hexToRGB565(customSidebar);
+        CARD_COLOR = hexToRGB565(customCard);
+        TEXT_GRAY = hexToRGB565(customText);
+        ACCENT_CYAN = hexToRGB565(customAccent);
+    }
 }
 
 String urlEncode(String str) {
@@ -243,7 +288,7 @@ void drawBootLogo() {
   tft.drawString("SNAPMAKER U1 SCREEN", 160, 130, 2);
   
   tft.setTextColor(ACCENT_CYAN);
-  tft.drawString("v1.5 - Made by Nates Print Shop", 160, 155, 1);
+  tft.drawString("v2.0 - Made by Nates Print Shop", 160, 155, 1);
   
   tft.setTextColor(TEXT_GRAY);
   tft.drawString("Initializing Core Systems...", 160, 190, 1);
@@ -333,7 +378,7 @@ void fetchKlipperFiles() {
 }
 
 void syncFilamentToKlipper(int tIdx) {
-  blockSyncUntil = millis() + 5000; // NEW: Block Klipper overwrite for 5 seconds
+  blockSyncUntil = millis() + 5000;
 
   HTTPClient http;
   http.begin("http://" + String(printerIP) + ":7125/printer/filament_detect/set");
@@ -633,14 +678,21 @@ void setup() {
   tft.init();
   tft.setRotation(3); 
   
-  // NEW: Read Display Inversion from memory before drawing screen
   preferences.begin("u1_config", false);
   invertDisplay = preferences.getBool("invertDisplay", false);
   tft.invertDisplay(invertDisplay);
 
+  // LOAD THEME SETTINGS
+  currentTheme = preferences.getInt("theme", 0);
+  customBG = preferences.getString("customBG", customBG);
+  customSidebar = preferences.getString("customSidebar", customSidebar);
+  customCard = preferences.getString("customCard", customCard);
+  customText = preferences.getString("customText", customText);
+  customAccent = preferences.getString("customAccent", customAccent);
+  applyTheme();
+
   tft.setTextSize(1); 
   
-  // Custom Boot Logo
   drawBootLogo();
 
   touch.setRotation(3);
@@ -698,8 +750,6 @@ void setup() {
 
   WiFiManager wm;
   wm.setSaveConfigCallback(saveConfigCallback);
-  
-  /// Set the callback that updates the screen if Wi-Fi setup is needed
   wm.setAPCallback(configModeCallback);
   
   WiFiManagerParameter custom_ip("printer_ip", "U1 IP Address", printerIP, 32);
@@ -708,7 +758,6 @@ void setup() {
   wm.addParameter(&custom_ip);
   wm.addParameter(&custom_name);
 
-  // drawBootLogo() acts as the visual wait screen for this
   if (!wm.autoConnect("Snapmaker-U1-Display")) ESP.restart();
   
   if (shouldSaveConfig) {
@@ -716,12 +765,10 @@ void setup() {
     strcpy(printerName, custom_name.getValue());
     preferences.putString("printer_ip", printerIP);
     preferences.putString("printer_name", printerName);
-    
   }
 
   if (MDNS.begin(mdnsName)) Serial.println("mDNS started");
   
-  // Define Web Routes
   server.on("/", HTTP_GET, handleRoot);
   server.on("/tech", HTTP_GET, handleTech);
   server.on("/save", HTTP_POST, handleSave);
@@ -751,7 +798,7 @@ void loop() {
   server.handleClient(); 
 
   if (touch.Pressed()) {
-    if (millis() - lastTouchTime > 80) { 
+    if (millis() - lastTouchTime > 250) { 
       lastTouchTime = millis(); 
       
       int touchX = touch.X();
@@ -824,9 +871,7 @@ void loop() {
                closedModal = true; handledTouch = true; break;
             }
           }
-          // Handle the new "None" button using Snapmaker Park Macro
           if (!handledTouch && touchX > 60 && touchX < 300 && touchY > 180 && touchY < 220) {
-             // Figure out which tool is currently active so we can park it
              String parkCmd = (activeTool <= 0) ? "park_extruder" : "park_extruder" + String(activeTool);
              sendGcode(parkCmd); 
              showToast("Tool Change", "Parking Tool");
@@ -836,7 +881,10 @@ void loop() {
         }
         else if (activeModal >= 10 && activeModal <= 13) {
           int tIdx = activeModal - 10;
-          if (touchY > 40 && touchY < 75) {
+          
+          if (touchY < 40) { handledTouch = true; } 
+          
+          else if (touchY > 40 && touchY < 75) {
             if (touchX > 50 && touchX < 105) { sendGcode("M104 T" + String(tIdx) + " S0"); showToast("Heater Off", "Tool " + String(tIdx+1)); handledTouch = true; }
             else if (touchX > 115 && touchX < 170) { sendGcode("M104 T" + String(tIdx) + " S200"); showToast("Heating", "Tool " + String(tIdx+1) + " to 200C"); handledTouch = true; }
             else if (touchX > 180 && touchX < 235) { sendGcode("M104 T" + String(tIdx) + " S220"); showToast("Heating", "Tool " + String(tIdx+1) + " to 220C"); handledTouch = true; }
@@ -857,20 +905,17 @@ void loop() {
             }
           }
           else if (touchY > 140 && touchY < 175) {
-            // Build the exact Snapmaker Klipper macros
             String toolName = (tIdx == 0) ? "extruder" : "extruder" + String(tIdx);
             String pickCmd = (tIdx == 0) ? "pick_extruder" : "pick_extruder" + String(tIdx);
             String parkCmd = (tIdx == 0) ? "park_extruder" : "park_extruder" + String(tIdx);
 
             if (touchX > 50 && touchX < 170) {
-              // ATTACH / DETACH using Snapmaker native Pick/Park commands
               if (toolAttached[tIdx]) { sendGcode(parkCmd); showToast("Tool", "Parking..."); }
               else { sendGcode(pickCmd); showToast("Tool", "Attaching T" + String(tIdx+1)); }
               toolAttached[tIdx] = !toolAttached[tIdx];
               drawToolModal(tIdx);
               handledTouch = true;
             } else if (touchX > 180 && touchX < 300) {
-              // LOAD / UNLOAD using Snapmaker native feeding sequence
               if (toolLoaded[tIdx]) { 
                 sendGcode(pickCmd + "\nACTIVATE_EXTRUDER EXTRUDER=" + toolName + "\nINNER_FILAMENT_UNLOAD"); 
                 showToast("Filament", "Unloading T" + String(tIdx+1)); 
@@ -946,7 +991,7 @@ void loop() {
              }
           }
         }
-        else if (activeModal == 50) { // IP ADDRESS NUMPAD
+        else if (activeModal == 50) { 
           if (touchY < 70) { handledTouch = true; }
           else if (touchY >= 70 && touchY < 200) {
               int r = (touchY - 75) / 32;
@@ -1099,7 +1144,6 @@ void loop() {
           if (touchX > 240 && touchX < 290) moveDist = 50.0;
           drawMoveTab(); 
         } else {
-          // Perfectly aligned touch boundaries matching the UI boxes
           if (touchX > 120 && touchX < 160 && touchY > 80 && touchY < 120) { sendGcode("G91\nG1 Y" + String(moveDist) + " F6000\nG90"); showToast("Jog", "Y+ " + String(moveDist)); }
           if (touchX > 120 && touchX < 160 && touchY > 180 && touchY < 220) { sendGcode("G91\nG1 Y-" + String(moveDist) + " F6000\nG90"); showToast("Jog", "Y- " + String(moveDist)); }
           if (touchX > 70 && touchX < 110 && touchY > 130 && touchY < 170) { sendGcode("G91\nG1 X-" + String(moveDist) + " F6000\nG90"); showToast("Jog", "X- " + String(moveDist)); }
@@ -1172,7 +1216,7 @@ void loop() {
           ESP.restart();
         }
         else if (touchX > 48 && touchX < 200 && touchY > 220) {
-          showToast("Nates Print Shop", "Custom Firmware v1.5 Active");
+          showToast("Nates Print Shop", "Custom Firmware v2.0 Active");
         }
       }
     }
@@ -1434,7 +1478,6 @@ void drawActiveToolModal() {
     tft.drawString("Tool " + String(i + 1), x + 55, y + 22, 2);
   }
   
-   // New "None" Detach Button
   tft.fillRoundRect(60, 180, 240, 40, 6, BTN_RED);
   tft.setTextColor(TFT_WHITE, BTN_RED);
   tft.drawString("None", 42 + 278/2, 200, 2); 
@@ -1457,13 +1500,11 @@ void drawToolModal(int idx) {
     tft.drawString(tempLbl[i], x + 27, 40 + 17, 1);
   }
 
-  // Type Box 
   tft.fillRoundRect(50, 90, 120, 35, 4, CARD_COLOR);
   tft.drawRoundRect(50, 90, 120, 35, 4, ACCENT_CYAN);
   tft.setTextColor(TFT_WHITE, CARD_COLOR);
   tft.drawString("Type: " + filType[idx], 50 + 60, 90 + 17, 1);
 
-  // Color Box
   tft.fillRoundRect(180, 90, 120, 35, 4, CARD_COLOR);
   tft.drawRoundRect(180, 90, 120, 35, 4, ACCENT_CYAN);
   tft.drawString("Color", 180 + 40, 90 + 17, 1);
@@ -1512,7 +1553,7 @@ void drawKeyboardModal(int idx) {
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(TFT_WHITE);
 
-  if (kbMode == 2) { // Numeric Keypad Mode for IP
+  if (kbMode == 2) { 
       const char* numpad[12] = {"1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "DEL"};
       for (int i=0; i<12; i++) {
           int r = i / 3;
@@ -1522,7 +1563,7 @@ void drawKeyboardModal(int idx) {
           tft.fillRoundRect(bx, by, 50, 28, 4, tft.color565(50, 55, 65));
           tft.drawString(numpad[i], bx + 25, by + 14, 2);
       }
-  } else { // Standard QWERTY Mode
+  } else { 
       for (int r=0; r<4; r++) {
         for (int c=0; c<10; c++) {
           char key = kbRows[r][c];
@@ -1753,26 +1794,26 @@ void drawSettingsTab() {
   }
 
   // Edit IP Button
-  tft.fillRoundRect(48, 125, 130, 40, 6, tft.color565(50, 55, 65));
-  tft.setTextColor(TFT_WHITE, tft.color565(50, 55, 65)); 
+  tft.fillRoundRect(48, 125, 130, 40, 6, CARD_COLOR);
+  tft.setTextColor(TFT_WHITE, CARD_COLOR); 
   tft.setTextDatum(MC_DATUM);
   tft.drawString("Edit IP", 113, 145, 2);
 
   // Edit Name Button
-  tft.fillRoundRect(184, 125, 130, 40, 6, tft.color565(50, 55, 65));
+  tft.fillRoundRect(184, 125, 130, 40, 6, CARD_COLOR);
   tft.drawString("Edit Name", 249, 145, 2);
 
   tft.fillRoundRect(48, 175, 130, 40, 6, BTN_BLUE); 
   tft.setTextColor(TFT_WHITE, BTN_BLUE); 
   tft.drawString("Calibrate", 113, 195, 2);
 
-  tft.fillRoundRect(184, 175, 130, 40, 6, tft.color565(40, 60, 90)); 
-  tft.setTextColor(ACCENT_CYAN, tft.color565(40, 60, 90));
+  tft.fillRoundRect(184, 175, 130, 40, 6, CARD_COLOR); 
+  tft.setTextColor(ACCENT_CYAN, CARD_COLOR);
   tft.drawString("Reset WiFi", 249, 195, 2);
   
   tft.setTextDatum(TL_DATUM);
   tft.setTextColor(ACCENT_CYAN, BG_COLOR);
-  tft.drawString("v1.5 Firmware by Nates Print Shop", 48, 225, 1);
+  tft.drawString("v2.0 Firmware by Nates Print Shop", 48, 225, 1);
 }
 
 void updateDynamicUI() {
@@ -1873,7 +1914,8 @@ void updateDynamicUI() {
 
 void fetchPrinterData() {
   HTTPClient http;
-  String url = "http://" + String(printerIP) + ":7125/printer/objects/query?print_stats&toolhead&extruder&extruder1&extruder2&extruder3&heater_bed&fan&gcode_move&display_status&print_task_config";
+  // Removed print_task_config from the URL string
+  String url = "http://" + String(printerIP) + ":7125/printer/objects/query?print_stats&toolhead&extruder&extruder1&extruder2&extruder3&heater_bed&fan&gcode_move&display_status";
   
   http.begin(url);
   int httpCode = http.GET();
@@ -1902,32 +1944,7 @@ void fetchPrinterData() {
       toolTemp[3] = status["extruder3"]["temperature"].as<float>();
       toolTarget[3] = status["extruder3"]["target"].as<float>();
 
-      // ACTIVE SYNC FROM KLIPPER TO ESP32 MEMORY
-      // NEW: Wrap this in our timer block so we don't overwrite user's fresh save
-      if (millis() > blockSyncUntil) {
-          JsonObject taskConfig = status["print_task_config"];
-          if (!taskConfig.isNull()) {
-            JsonArray colors = taskConfig["filament_color_rgba"];
-            JsonArray types = taskConfig["filament_type"];
-            
-            for (int i = 0; i < 4; i++) {
-              if (!colors[i].isNull()) {
-                 String cStr = colors[i].as<String>();
-                 if (cStr.length() >= 6) {
-                     filColor[i] = hexToRGB565(cStr);
-                     preferences.putString(("filColor" + String(i)).c_str(), rgb565ToHex(filColor[i]));
-                 }
-              }
-              if (!types[i].isNull()) {
-                 String tStr = types[i].as<String>();
-                 if (tStr.length() > 0 && tStr != "null") {
-                     filType[i] = tStr;
-                     preferences.putString(("filType" + String(i)).c_str(), filType[i]);
-                 }
-              }
-            }
-          }
-      }
+      // ACTIVE SYNC FROM KLIPPER REMOVED: The ESP32 is now the Master Source of Truth for filaments
 
       printSpeed = status["gcode_move"]["speed_factor"].as<float>() * 100.0;
       fanSpeed = status["fan"]["speed"].as<float>() * 100.0;
@@ -1938,7 +1955,7 @@ void fetchPrinterData() {
       else if(tHead == "extruder1") activeTool = 1;
       else if(tHead == "extruder2") activeTool = 2;
       else if(tHead == "extruder3") activeTool = 3;
-      else activeTool = -1; // "None" handler
+      else activeTool = -1;
     }
   }
   http.end();
@@ -1983,6 +2000,7 @@ String getWebHeader(String activePage) {
   html += "</style>";
   html += "<script>";
   html += "function sc(cmd, pmt) { let v = prompt(pmt); if(v !== null && v !== '') { document.getElementById('c_param').name = cmd; document.getElementById('c_param').value = v; document.getElementById('c_form').submit(); } }";
+  html += "function toggleCustom() { var sel = document.getElementById('themeSelect'); var div = document.getElementById('customColors'); if(sel && div) { div.style.display = (sel.value == '4') ? 'block' : 'none'; } }";
   html += "</script>";
   html += "</head><body><div class='container'>";
   
@@ -2066,6 +2084,7 @@ void handleTech() {
 
   html += "<div class='card'><h3 style='margin-top:0;'>System Configuration</h3>";
   html += "<form action='/save' method='POST'>";
+  
   html += "<label style='color:#888; font-weight:bold; font-size:12px;'>PRINTER IP ADDRESS</label><br>";
   html += "<input type='text' name='ip' value='" + String(printerIP) + "'>";
   html += "<label style='color:#888; font-weight:bold; font-size:12px;'>DISPLAY NAME</label><br>";
@@ -2073,12 +2092,32 @@ void handleTech() {
   html += "<label style='color:#888; font-weight:bold; font-size:12px;'>SCREEN URL (mDNS Hostname)</label><br>";
   html += "<input type='text' name='mdns' value='" + String(mdnsName) + "'>";
   
-  // NEW: Display Invert Toggle
   html += "<label style='color:#888; font-weight:bold; font-size:12px;'>INVERT DISPLAY COLORS</label><br>";
   html += "<select name='invert_display'>";
   html += "<option value='0'" + String(!invertDisplay ? " selected" : "") + ">Normal</option>";
   html += "<option value='1'" + String(invertDisplay ? " selected" : "") + ">Inverted (Fixes washed out colors)</option>";
   html += "</select>";
+
+  // --- THEME CUSTOMIZER ENGINE ---
+  html += "<hr style='border:1px solid #333; margin:15px 0;'>";
+  html += "<h3 style='color:#00E5FF; margin-top:0;'>Theme Customization</h3>";
+  html += "<label style='color:#888; font-weight:bold; font-size:12px;'>UI THEME</label><br>";
+  html += "<select name='theme' id='themeSelect' onchange='toggleCustom()' style='margin-bottom:10px;'>";
+  html += "<option value='0'" + String(currentTheme == 0 ? " selected" : "") + ">Dark Mode (Default)</option>";
+  html += "<option value='1'" + String(currentTheme == 1 ? " selected" : "") + ">Light Mode</option>";
+  html += "<option value='2'" + String(currentTheme == 2 ? " selected" : "") + ">Cyberpunk</option>";
+  html += "<option value='3'" + String(currentTheme == 3 ? " selected" : "") + ">Retro Terminal</option>";
+  html += "<option value='4'" + String(currentTheme == 4 ? " selected" : "") + ">Custom Colors</option>";
+  html += "</select>";
+
+  html += "<div id='customColors' style='display:" + String(currentTheme == 4 ? "block" : "none") + ";'>";
+  html += "<div style='display:flex; justify-content:space-between; margin-bottom:5px;'><label style='color:#888;'>Background</label><input type='color' name='c_bg' value='" + customBG + "' style='width:50%; height:30px;'></div>";
+  html += "<div style='display:flex; justify-content:space-between; margin-bottom:5px;'><label style='color:#888;'>Sidebar</label><input type='color' name='c_side' value='" + customSidebar + "' style='width:50%; height:30px;'></div>";
+  html += "<div style='display:flex; justify-content:space-between; margin-bottom:5px;'><label style='color:#888;'>Cards/Modals</label><input type='color' name='c_card' value='" + customCard + "' style='width:50%; height:30px;'></div>";
+  html += "<div style='display:flex; justify-content:space-between; margin-bottom:5px;'><label style='color:#888;'>Text</label><input type='color' name='c_text' value='" + customText + "' style='width:50%; height:30px;'></div>";
+  html += "<div style='display:flex; justify-content:space-between; margin-bottom:5px;'><label style='color:#888;'>Accent</label><input type='color' name='c_acc' value='" + customAccent + "' style='width:50%; height:30px;'></div>";
+  html += "</div>";
+  html += "<script>toggleCustom();</script>"; // Ensures correct display state on load
   
   html += "<hr style='border:1px solid #333; margin:15px 0;'>";
   html += "<label style='color:#888; font-weight:bold; font-size:12px;'>NEW WI-FI SSID (Leave blank to keep current)</label><br>";
@@ -2140,11 +2179,36 @@ void handleSave() {
   preferences.putString("printer_name", printerName);
   preferences.putString("mdns_name", mdnsName);
   
-  // NEW: Save Display Inversion 
   if (server.hasArg("invert_display")) {
     invertDisplay = (server.arg("invert_display") == "1");
     preferences.putBool("invertDisplay", invertDisplay);
     tft.invertDisplay(invertDisplay);
+  }
+
+  // --- SAVE THEME PREFERENCES ---
+  if (server.hasArg("theme")) {
+    currentTheme = server.arg("theme").toInt();
+    preferences.putInt("theme", currentTheme);
+  }
+  if (server.hasArg("c_bg")) {
+    customBG = server.arg("c_bg");
+    preferences.putString("customBG", customBG);
+  }
+  if (server.hasArg("c_side")) {
+    customSidebar = server.arg("c_side");
+    preferences.putString("customSidebar", customSidebar);
+  }
+  if (server.hasArg("c_card")) {
+    customCard = server.arg("c_card");
+    preferences.putString("customCard", customCard);
+  }
+  if (server.hasArg("c_text")) {
+    customText = server.arg("c_text");
+    preferences.putString("customText", customText);
+  }
+  if (server.hasArg("c_acc")) {
+    customAccent = server.arg("c_acc");
+    preferences.putString("customAccent", customAccent);
   }
 
   bool changeWifi = (newSSID.length() > 0);
@@ -2160,7 +2224,7 @@ void handleSave() {
 }
 
 void handleSaveFilament() {
-  blockSyncUntil = millis() + 5000; // NEW: Block Klipper overwrite for 5 seconds
+  blockSyncUntil = millis() + 5000; 
 
   for (int i=0; i<4; i++) {
       String t = server.arg("t" + String(i) + "_type");
