@@ -1772,7 +1772,7 @@ void drawSettingsTab() {
   
   tft.setTextDatum(TL_DATUM);
   tft.setTextColor(ACCENT_CYAN, BG_COLOR);
-  tft.drawString("v1.0 Firmware by Nates Print Shop", 48, 225, 1);
+  tft.drawString("v1.5 Firmware by Nates Print Shop", 48, 225, 1);
 }
 
 void updateDynamicUI() {
