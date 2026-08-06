@@ -36,6 +36,8 @@ bool shouldSaveConfig = false;
 bool sdCardReady = false;
 uint64_t sdCardTotal = 0;
 uint64_t sdCardUsed = 0;
+bool invertDisplay = false; // NEW: Display inversion tracking
+unsigned long blockSyncUntil = 0; // NEW: Klipper sync lockout timer
 
 // --- STATE VARIABLES ---
 unsigned long lastUpdate = 0;
@@ -106,7 +108,7 @@ bool isCalibrated = false;
 File fsUploadFile;
 
 // --- UI COLORS ---
-#define BG_COLOR tft.color565(15, 17, 21)       
+#define BG_COLOR tft.color565(15, 17, 21)        
 #define SIDEBAR_COLOR tft.color565(22, 27, 34)  
 #define CARD_COLOR tft.color565(26, 29, 36)     
 #define TEXT_GRAY tft.color565(136, 136, 136)   
@@ -238,7 +240,7 @@ void drawBootLogo() {
   tft.drawString("CYD", 160, 90, 4); 
   
   tft.setTextColor(TFT_WHITE);
-  tft.drawString("SNAPMAKER SCREEN", 160, 130, 2);
+  tft.drawString("SNAPMAKER U1 SCREEN", 160, 130, 2);
   
   tft.setTextColor(ACCENT_CYAN);
   tft.drawString("v1.0 - Made by Nates Print Shop", 160, 155, 1);
@@ -331,6 +333,8 @@ void fetchKlipperFiles() {
 }
 
 void syncFilamentToKlipper(int tIdx) {
+  blockSyncUntil = millis() + 5000; // NEW: Block Klipper overwrite for 5 seconds
+
   HTTPClient http;
   http.begin("http://" + String(printerIP) + ":7125/printer/filament_detect/set");
   http.addHeader("Content-Type", "application/json");
@@ -628,7 +632,12 @@ void setup() {
   digitalWrite(TFT_BL, HIGH);
   tft.init();
   tft.setRotation(3); 
-  tft.invertDisplay(false);
+  
+  // NEW: Read Display Inversion from memory before drawing screen
+  preferences.begin("u1_config", false);
+  invertDisplay = preferences.getBool("invertDisplay", false);
+  tft.invertDisplay(invertDisplay);
+
   tft.setTextSize(1); 
   
   // Custom Boot Logo
@@ -643,7 +652,6 @@ void setup() {
     loadFilesFromSD();
   }
 
-  preferences.begin("u1_config", false);
   String savedIP = preferences.getString("printer_ip", "192.168.87.125");
   String savedName = preferences.getString("printer_name", "Snapmaker U1");
   String savedMDNS = preferences.getString("mdns_name", "u1-display");
@@ -1895,27 +1903,30 @@ void fetchPrinterData() {
       toolTarget[3] = status["extruder3"]["target"].as<float>();
 
       // ACTIVE SYNC FROM KLIPPER TO ESP32 MEMORY
-      JsonObject taskConfig = status["print_task_config"];
-      if (!taskConfig.isNull()) {
-        JsonArray colors = taskConfig["filament_color_rgba"];
-        JsonArray types = taskConfig["filament_type"];
-        
-        for (int i = 0; i < 4; i++) {
-          if (!colors[i].isNull()) {
-             String cStr = colors[i].as<String>();
-             if (cStr.length() >= 6) {
-                 filColor[i] = hexToRGB565(cStr);
-                 preferences.putString(("filColor" + String(i)).c_str(), rgb565ToHex(filColor[i]));
-             }
+      // NEW: Wrap this in our timer block so we don't overwrite user's fresh save
+      if (millis() > blockSyncUntil) {
+          JsonObject taskConfig = status["print_task_config"];
+          if (!taskConfig.isNull()) {
+            JsonArray colors = taskConfig["filament_color_rgba"];
+            JsonArray types = taskConfig["filament_type"];
+            
+            for (int i = 0; i < 4; i++) {
+              if (!colors[i].isNull()) {
+                 String cStr = colors[i].as<String>();
+                 if (cStr.length() >= 6) {
+                     filColor[i] = hexToRGB565(cStr);
+                     preferences.putString(("filColor" + String(i)).c_str(), rgb565ToHex(filColor[i]));
+                 }
+              }
+              if (!types[i].isNull()) {
+                 String tStr = types[i].as<String>();
+                 if (tStr.length() > 0 && tStr != "null") {
+                     filType[i] = tStr;
+                     preferences.putString(("filType" + String(i)).c_str(), filType[i]);
+                 }
+              }
+            }
           }
-          if (!types[i].isNull()) {
-             String tStr = types[i].as<String>();
-             if (tStr.length() > 0 && tStr != "null") {
-                 filType[i] = tStr;
-                 preferences.putString(("filType" + String(i)).c_str(), filType[i]);
-             }
-          }
-        }
       }
 
       printSpeed = status["gcode_move"]["speed_factor"].as<float>() * 100.0;
@@ -1967,7 +1978,7 @@ String getWebHeader(String activePage) {
   html += ".stat h4 { margin: 0; font-size: 12px; color: #888; text-transform: uppercase; } ";
   html += ".stat div { font-size: 24px; font-weight: bold; margin-top: 8px; color: #00E5FF; font-family: 'Courier New', Courier, monospace; } ";
   html += ".stat.clickable:hover { border-color: #00E5FF; background: #2A3B5C; cursor: pointer; } ";
-  html += "input[type=text], input[type=number] { width: 100%; padding: 12px; margin: 8px 0 16px; box-sizing: border-box; background: #1a1d24; border: 1px solid #333; color: white; border-radius: 6px; } ";
+  html += "input[type=text], input[type=number], select { width: 100%; padding: 12px; margin: 8px 0 16px; box-sizing: border-box; background: #1a1d24; border: 1px solid #333; color: white; border-radius: 6px; } ";
   html += ".btn { width: 100%; padding: 14px; background: #00E5FF; color: black; border: none; border-radius: 6px; font-weight: bold; font-size: 16px; cursor: pointer; display: block; box-sizing: border-box; text-align: center; text-decoration: none; } ";
   html += "</style>";
   html += "<script>";
@@ -2061,6 +2072,14 @@ void handleTech() {
   html += "<input type='text' name='name' value='" + String(printerName) + "'>";
   html += "<label style='color:#888; font-weight:bold; font-size:12px;'>SCREEN URL (mDNS Hostname)</label><br>";
   html += "<input type='text' name='mdns' value='" + String(mdnsName) + "'>";
+  
+  // NEW: Display Invert Toggle
+  html += "<label style='color:#888; font-weight:bold; font-size:12px;'>INVERT DISPLAY COLORS</label><br>";
+  html += "<select name='invert_display'>";
+  html += "<option value='0'" + String(!invertDisplay ? " selected" : "") + ">Normal</option>";
+  html += "<option value='1'" + String(invertDisplay ? " selected" : "") + ">Inverted (Fixes washed out colors)</option>";
+  html += "</select>";
+  
   html += "<hr style='border:1px solid #333; margin:15px 0;'>";
   html += "<label style='color:#888; font-weight:bold; font-size:12px;'>NEW WI-FI SSID (Leave blank to keep current)</label><br>";
   html += "<input type='text' name='wifi_ssid' placeholder='Current: " + WiFi.SSID() + "'>";
@@ -2121,6 +2140,13 @@ void handleSave() {
   preferences.putString("printer_name", printerName);
   preferences.putString("mdns_name", mdnsName);
   
+  // NEW: Save Display Inversion 
+  if (server.hasArg("invert_display")) {
+    invertDisplay = (server.arg("invert_display") == "1");
+    preferences.putBool("invertDisplay", invertDisplay);
+    tft.invertDisplay(invertDisplay);
+  }
+
   bool changeWifi = (newSSID.length() > 0);
   if (changeWifi) {
     WiFi.begin(newSSID.c_str(), newPass.c_str());
@@ -2134,6 +2160,8 @@ void handleSave() {
 }
 
 void handleSaveFilament() {
+  blockSyncUntil = millis() + 5000; // NEW: Block Klipper overwrite for 5 seconds
+
   for (int i=0; i<4; i++) {
       String t = server.arg("t" + String(i) + "_type");
       String c = server.arg("t" + String(i) + "_color");
