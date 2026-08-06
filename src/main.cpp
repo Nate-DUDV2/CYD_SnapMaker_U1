@@ -243,7 +243,7 @@ void drawBootLogo() {
   tft.drawString("SNAPMAKER U1 SCREEN", 160, 130, 2);
   
   tft.setTextColor(ACCENT_CYAN);
-  tft.drawString("v1.0 - Made by Nates Print Shop", 160, 155, 1);
+  tft.drawString("v1.5 - Made by Nates Print Shop", 160, 155, 1);
   
   tft.setTextColor(TEXT_GRAY);
   tft.drawString("Initializing Core Systems...", 160, 190, 1);
@@ -1172,7 +1172,7 @@ void loop() {
           ESP.restart();
         }
         else if (touchX > 48 && touchX < 200 && touchY > 220) {
-          showToast("Nates Print Shop", "Custom Firmware v1.0 Active");
+          showToast("Nates Print Shop", "Custom Firmware v1.5 Active");
         }
       }
     }
