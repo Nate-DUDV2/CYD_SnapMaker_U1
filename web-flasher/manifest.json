@@ -1,6 +1,6 @@
 {
   "name": "CYD Snapmaker Screen",
-  "version": "1.0",
+  "version": "2.0",
   "new_install_prompt_erase": true,
   "builds": [
     {
