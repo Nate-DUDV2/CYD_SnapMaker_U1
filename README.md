@@ -4,6 +4,8 @@ A custom, standalone touchscreen firmware for the Snapmaker U1 (or any Klipper/M
 
 I built this because I wanted a dedicated, physical screen for my printer without having to deal with the overhead of a Raspberry Pi screen. This firmware talks directly to Moonraker's API to give you live stats, temperature control, toolhead management, and file launching—all from a $15 screen. Link: https://amzn.to/4fEUpME
 
+I now also have the 4inch screen added. Link: https://amzn.to/4hWfHH3
+
 **By Nate's Print Shop**
 
 ---
