@@ -1,0 +1,13 @@
+{
+  "name": "CYD Snapmaker Screen (4.0 inch)",
+  "version": "2.0.1",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        { "path": "firmware_40.bin", "offset": 65536 }
+      ]
+    }
+  ]
+}

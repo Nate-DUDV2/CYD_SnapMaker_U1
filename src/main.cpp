@@ -4,7 +4,6 @@
 #include <ArduinoJson.h>
 #include <SPI.h>
 #include <TFT_eSPI.h> 
-#include <TFT_Touch.h> 
 #include <Preferences.h>
 #include <WiFiManager.h>
 #include <WebServer.h>
@@ -12,19 +11,41 @@
 #include <SD.h>
 #include <FS.h>
 
-// --- HARDWARE PINS (LCDWIKI E32R28T / CYD ESP32-32E) ---
-#define TFT_BL 21
-#define SD_CS 5 
+// --- GLOBAL FIRMWARE VERSION ---
+#define FW_VERSION "v2.0.1"
 
-// Touch Pins (XPT2046)
-#define RTP_DOUT 39
-#define RTP_DIN  32
-#define RTP_SCK  25
-#define RTP_CS   33
+// ==========================================
+// --- BOARD SELECTION ---
+// Handled dynamically by platformio.ini!
+// ==========================================
+
+#ifdef BOARD_CYD_28
+  #include <TFT_Touch.h>
+  #define TFT_BL 21
+  #define SD_CS 5 
+  #define RTP_DOUT 39
+  #define RTP_DIN  32
+  #define RTP_SCK  25
+  #define RTP_CS   33
+  #define SCREEN_W 320
+  #define SCREEN_H 240
+  TFT_Touch touch = TFT_Touch(RTP_CS, RTP_SCK, RTP_DIN, RTP_DOUT);
+#elif defined(BOARD_40_INCH)
+  #define TFT_BL 27
+  #define SD_CS   5
+  #define SD_SCK  18
+  #define SD_MISO 19
+  #define SD_MOSI 23
+  #define SCREEN_W 480
+  #define SCREEN_H 320
+  SPIClass sdSPI(VSPI);
+#endif
+
+// --- DYNAMIC SCALING MACROS ---
+#define PX(x) ((x) * SCREEN_W / 320)
+#define PY(y) ((y) * SCREEN_H / 240)
 
 TFT_eSPI tft = TFT_eSPI();
-TFT_Touch touch = TFT_Touch(RTP_CS, RTP_SCK, RTP_DIN, RTP_DOUT);
-
 Preferences preferences;
 WebServer server(80);
 
@@ -49,43 +70,36 @@ float toolTemp[4] = {0,0,0,0};
 float toolTarget[4] = {0,0,0,0};
 int printSpeed = 100, fanSpeed = 0;
 float printProgress = 0.0;
-int activeTool = -1; // -1 represents "None"
+int activeTool = -1;
 float moveDist = 10.0; 
 
-// Filament & Tool State Data
 String filType[4] = {"PLA", "PLA", "PLA-CF", "WOOD"}; 
 uint16_t filColor[4] = {0x2104, 0x07FF, 0x3186, 0xA285}; 
 bool toolAttached[4] = {true, false, false, false}; 
 bool toolLoaded[4] = {true, true, true, true};      
 
-// Preset Lists for Web UI & Quick Palette
 const String FIL_TYPES[] = {"PLA", "PETG", "ABS", "TPU", "ASA", "PC", "NYLON", "PLA-CF", "PETG-CF", "WOOD"};
 const uint16_t FIL_COLORS[] = {TFT_WHITE, TFT_RED, TFT_BLUE, TFT_GREEN, TFT_YELLOW, TFT_ORANGE, TFT_CYAN, TFT_MAGENTA, 0x2104, 0xA285};
 
 unsigned long lastTouchTime = 0; 
-int currentTab = 0; // 0=Home, 1=Toolhead, 2=Move, 3=Print, 4=Settings
+int currentTab = 0;
 
-// --- SD CARD & KLIPPER FILES ---
 String fileList[20];
 int fileCount = 0;
-
 String klipperFileList[20];
 int klipperFileCount = 0;
-
 int fileScrollIndex = 0;
 String selectedFile = "";
-int printTabSource = 0; // 0 = Klipper, 1 = Screen SD
+int printTabSource = 0;
 
-// --- MODAL STATE ---
 int activeModal = 0; 
-int kbMode = 0; // 0 = Text, 1 = HEX Color, 2 = IP Address, 3 = Printer Name
+int kbMode = 0;
 String kbInput = ""; 
 bool optBedLevel = true;
 bool optTimelapse = false;
 bool optAdvMap = false;
 int optT0 = 0;
 
-// --- TOAST NOTIFICATIONS ---
 String toastTitle = "";
 String toastMsg = "";
 bool toastError = false;
@@ -93,7 +107,6 @@ bool toastDrawn = false;
 unsigned long toastExpireTime = 0;
 bool forceRedrawForToast = false; 
 
-// Pro QWERTY Layout
 const char kbRows[4][11] = {
   "1234567890",
   "QWERTYUIOP",
@@ -104,29 +117,20 @@ const char kbRows[4][11] = {
 const int presetBed[] = {0, 50, 60, 70, 80, 100};
 const int presetTool[] = {0, 190, 210, 230, 250, 270};
 bool isCalibrated = false;
-
 File fsUploadFile;
 
-// --- UI COLORS & THEME ENGINE ---
-uint16_t BG_COLOR;
-uint16_t SIDEBAR_COLOR;
-uint16_t CARD_COLOR;
-uint16_t TEXT_GRAY;
-uint16_t ACCENT_CYAN;
-
-int currentTheme = 0; // 0=Dark, 1=Light, 2=Cyberpunk, 3=Retro, 4=Custom
+uint16_t BG_COLOR, SIDEBAR_COLOR, CARD_COLOR, TEXT_GRAY, ACCENT_CYAN;
+int currentTheme = 0;
 String customBG = "#0F1115";
 String customSidebar = "#161B22";
 String customCard = "#1A1D24";
 String customText = "#888888";
 String customAccent = "#00E5FF";
 
-// Buttons remain fixed colors for intuitive interaction
 #define BTN_BLUE tft.color565(30, 80, 150)
 #define BTN_GREEN tft.color565(40, 120, 60)
-#define BTN_RED tft.color565(150, 50, 50)       
+#define BTN_RED tft.color565(150, 50, 50)        
 
-// Declarations
 void loadFilesFromSD();
 void fetchKlipperFiles();
 void syncFilamentToKlipper(int tIdx);
@@ -164,7 +168,6 @@ void configModeCallback(WiFiManager *myWiFiManager);
 String urlEncode(String str);
 void applyTheme();
 
-// --- HELPER FUNCTIONS ---
 uint16_t hexToRGB565(String hex) {
   if (hex.startsWith("#")) hex.remove(0, 1);
   if (hex.length() >= 6) hex = hex.substring(0, 6);
@@ -184,33 +187,32 @@ String rgb565ToHex(uint16_t color) {
   return String(hex);
 }
 
-// --- THEME APPLY ENGINE ---
 void applyTheme() {
-    if (currentTheme == 0) { // Dark Mode (Default)
+    if (currentTheme == 0) {
         BG_COLOR = tft.color565(15, 17, 21);
         SIDEBAR_COLOR = tft.color565(22, 27, 34);
         CARD_COLOR = tft.color565(26, 29, 36);
         TEXT_GRAY = tft.color565(136, 136, 136);
         ACCENT_CYAN = tft.color565(0, 229, 255);
-    } else if (currentTheme == 1) { // Light Mode
+    } else if (currentTheme == 1) {
         BG_COLOR = tft.color565(230, 235, 240);
         SIDEBAR_COLOR = tft.color565(200, 205, 215);
         CARD_COLOR = tft.color565(255, 255, 255);
         TEXT_GRAY = tft.color565(80, 80, 80);
         ACCENT_CYAN = tft.color565(0, 150, 255);
-    } else if (currentTheme == 2) { // Cyberpunk
+    } else if (currentTheme == 2) {
         BG_COLOR = tft.color565(11, 10, 16);
         SIDEBAR_COLOR = tft.color565(21, 10, 33);
         CARD_COLOR = tft.color565(34, 15, 50);
         TEXT_GRAY = tft.color565(255, 0, 153); 
         ACCENT_CYAN = tft.color565(0, 255, 255); 
-    } else if (currentTheme == 3) { // Retro Terminal
+    } else if (currentTheme == 3) {
         BG_COLOR = tft.color565(15, 15, 15);
         SIDEBAR_COLOR = tft.color565(25, 25, 25);
         CARD_COLOR = tft.color565(30, 30, 30);
         TEXT_GRAY = tft.color565(255, 176, 0); 
         ACCENT_CYAN = tft.color565(50, 255, 50); 
-    } else if (currentTheme == 4) { // Custom
+    } else if (currentTheme == 4) {
         BG_COLOR = hexToRGB565(customBG);
         SIDEBAR_COLOR = hexToRGB565(customSidebar);
         CARD_COLOR = hexToRGB565(customCard);
@@ -246,74 +248,75 @@ void showToast(String title, String msg, bool isError) {
 
 void drawToast() {
   if (millis() > toastExpireTime) return;
-  tft.fillRoundRect(50, 10, 260, 45, 6, CARD_COLOR);
-  tft.drawRoundRect(50, 10, 260, 45, 6, toastError ? BTN_RED : BTN_GREEN);
+  tft.fillRoundRect(PX(50), PY(10), PX(260), PY(45), 6, CARD_COLOR);
+  tft.drawRoundRect(PX(50), PY(10), PX(260), PY(45), 6, toastError ? BTN_RED : BTN_GREEN);
   tft.setTextColor(TFT_WHITE);
   tft.setTextDatum(ML_DATUM);
-  tft.drawString(toastTitle, 60, 22, 2);
+  tft.drawString(toastTitle, PX(60), PY(22), 2);
   tft.setTextColor(TEXT_GRAY);
   
   String shortMsg = toastMsg;
   if(shortMsg.length() > 35) shortMsg = shortMsg.substring(0, 32) + "...";
-  tft.drawString(shortMsg, 60, 38, 1);
+  tft.drawString(shortMsg, PX(60), PY(38), 1);
   tft.setTextDatum(TL_DATUM);
 }
 
-// -------------------------------------------------------------
-// VECTOR BOOT LOGO: "CYD SNAPMAKER SCREEN"
-// -------------------------------------------------------------
 void drawBootLogo() {
   tft.fillScreen(BG_COLOR);
-  
-  // Outer Tech Border
-  tft.drawRect(10, 10, 300, 220, ACCENT_CYAN);
-  tft.drawRect(12, 12, 296, 216, tft.color565(50, 55, 65));
-
-  // Circuit Trace Accents (Top Left)
+  tft.drawRect(10, 10, SCREEN_W - 20, SCREEN_H - 20, ACCENT_CYAN);
+  tft.drawRect(12, 12, SCREEN_W - 24, SCREEN_H - 24, tft.color565(50, 55, 65));
   tft.drawLine(10, 40, 30, 40, ACCENT_CYAN);
   tft.drawLine(30, 40, 40, 30, ACCENT_CYAN);
   tft.drawLine(40, 30, 100, 30, ACCENT_CYAN);
-
-  // Circuit Trace Accents (Bottom Right)
-  tft.drawLine(310, 200, 290, 200, ACCENT_CYAN);
-  tft.drawLine(290, 200, 280, 210, ACCENT_CYAN);
-  tft.drawLine(280, 210, 220, 210, ACCENT_CYAN);
-
-  // Logo Typography
+  tft.drawLine(SCREEN_W - 10, SCREEN_H - 40, SCREEN_W - 30, SCREEN_H - 40, ACCENT_CYAN);
+  tft.drawLine(SCREEN_W - 30, SCREEN_H - 40, SCREEN_W - 40, SCREEN_H - 30, ACCENT_CYAN);
+  tft.drawLine(SCREEN_W - 40, SCREEN_H - 30, SCREEN_W - 100, SCREEN_H - 30, ACCENT_CYAN);
   tft.setTextColor(ACCENT_CYAN);
   tft.setTextDatum(MC_DATUM);
-  tft.drawString("CYD", 160, 90, 4); 
-  
+  tft.drawString("CYD", SCREEN_W/2, PY(90), 4); 
   tft.setTextColor(TFT_WHITE);
-  tft.drawString("SNAPMAKER U1 SCREEN", 160, 130, 2);
-  
+  tft.drawString("SNAPMAKER U1 SCREEN", SCREEN_W/2, PY(130), 2);
   tft.setTextColor(ACCENT_CYAN);
-  tft.drawString("v2.0 - Made by Nates Print Shop", 160, 155, 1);
-  
+  tft.drawString(String(FW_VERSION) + " - Made by Nates Print Shop", SCREEN_W/2, PY(155), 1);
   tft.setTextColor(TEXT_GRAY);
-  tft.drawString("Initializing Core Systems...", 160, 190, 1);
+  tft.drawString("Initializing Core Systems...", SCREEN_W/2, PY(190), 1);
+  tft.setTextDatum(TL_DATUM);
+}
+
+void configModeCallback(WiFiManager *myWiFiManager) {
+  tft.fillScreen(BG_COLOR);
+  tft.setTextColor(ACCENT_CYAN);
+  tft.setTextDatum(MC_DATUM);
+  tft.drawString("Wi-Fi Setup Required", SCREEN_W/2, PY(60), 4);
+  tft.setTextColor(TFT_WHITE);
+  tft.drawString("Connect phone/PC to network:", SCREEN_W/2, PY(120), 2);
+  tft.setTextColor(TFT_YELLOW);
+  tft.drawString(myWiFiManager->getConfigPortalSSID(), SCREEN_W/2, PY(150), 2);
+  tft.setTextColor(TEXT_GRAY);
+  tft.drawString("Then go to http://192.168.4.1", SCREEN_W/2, PY(190), 1);
   tft.setTextDatum(TL_DATUM);
 }
 
 // -------------------------------------------------------------
-// WI-FI SETUP SCREEN (Overrides Boot Logo during Captive Portal)
+// UNIFIED TOUCH WRAPPER
 // -------------------------------------------------------------
-void configModeCallback(WiFiManager *myWiFiManager) {
-  tft.fillScreen(BG_COLOR);
-  
-  tft.setTextColor(ACCENT_CYAN);
-  tft.setTextDatum(MC_DATUM);
-  tft.drawString("Wi-Fi Setup Required", 160, 60, 4);
-  
-  tft.setTextColor(TFT_WHITE);
-  tft.drawString("Connect phone/PC to network:", 160, 120, 2);
-  
-  tft.setTextColor(TFT_YELLOW);
-  tft.drawString(myWiFiManager->getConfigPortalSSID(), 160, 150, 2);
-  
-  tft.setTextColor(TEXT_GRAY);
-  tft.drawString("Then go to http://192.168.4.1", 160, 190, 1);
-  tft.setTextDatum(TL_DATUM);
+bool getTouchCoord(int &x, int &y) {
+#ifdef BOARD_CYD_28
+  if (touch.Pressed()) {
+    x = touch.X();
+    y = touch.Y();
+    return true;
+  }
+  return false;
+#elif defined(BOARD_40_INCH)
+  uint16_t ux = 0, uy = 0;
+  if (tft.getTouch(&ux, &uy)) {
+    x = ux;
+    y = uy;
+    return true;
+  }
+  return false;
+#endif
 }
 
 void loadFilesFromSD() {
@@ -379,7 +382,6 @@ void fetchKlipperFiles() {
 
 void syncFilamentToKlipper(int tIdx) {
   blockSyncUntil = millis() + 5000;
-
   HTTPClient http;
   http.begin("http://" + String(printerIP) + ":7125/printer/filament_detect/set");
   http.addHeader("Content-Type", "application/json");
@@ -426,7 +428,7 @@ bool uploadFileToKlipper(String localPath, String remoteName, int yOffset) {
   uint32_t uploaded = 0;
   int lastP = -1;
   
-  tft.drawRect(30, yOffset, 260, 20, tft.color565(50, 55, 65));
+  tft.drawRect(PX(30), PY(yOffset), PX(260), PY(20), tft.color565(50, 55, 65));
 
   while (f.available()) {
       size_t c = f.read(buf, 4096);
@@ -436,10 +438,10 @@ bool uploadFileToKlipper(String localPath, String remoteName, int yOffset) {
       if (fileLen > 0) {
           int p = (uploaded * 100) / fileLen;
           if (p > lastP && p <= 100) {
-              tft.fillRect(32, yOffset + 2, (int)((p / 100.0) * 256), 16, ACCENT_CYAN);
+              tft.fillRect(PX(32), PY(yOffset + 2), (int)((p / 100.0) * PX(256)), PY(16), ACCENT_CYAN);
               tft.setTextColor(BG_COLOR);
               tft.setTextDatum(MC_DATUM);
-              tft.drawString(String(p) + "% Complete", 160, yOffset + 10, 1);
+              tft.drawString(String(p) + "% Complete", SCREEN_W/2, PY(yOffset + 10), 1);
               lastP = p;
           }
       }
@@ -462,29 +464,22 @@ bool uploadFileToKlipper(String localPath, String remoteName, int yOffset) {
   return true;
 }
 
-// -------------------------------------------------------------
-// THE ULTIMATE KLIPPER DUMP-ZONE SMART PATCHER 
-// -------------------------------------------------------------
 void launchPatchedPrint(String filename, int source, bool bBed, bool bTime, bool bAdv, int t0_map) {
   tft.fillScreen(BG_COLOR);
   tft.setTextColor(TFT_WHITE);
   tft.setTextDatum(MC_DATUM);
-  tft.drawString("Preparing Job...", 160, 40, 2);
+  tft.drawString("Preparing Job...", SCREEN_W/2, PY(40), 2);
   
   String targetFilename = filename;
   bool needsPatching = (bBed || bTime || bAdv || t0_map != 0);
 
   if (needsPatching) {
-      tft.drawString("Patching File & Variables...", 160, 70, 1);
-      
+      tft.drawString("Patching File & Variables...", SCREEN_W/2, PY(70), 1);
       if (!SD.exists("/dump_zone")) SD.mkdir("/dump_zone");
       
       int extIdx = targetFilename.lastIndexOf('.');
-      if (extIdx > 0) {
-          targetFilename = targetFilename.substring(0, extIdx) + "_screen" + targetFilename.substring(extIdx);
-      } else {
-          targetFilename += "_screen.gcode";
-      }
+      if (extIdx > 0) targetFilename = targetFilename.substring(0, extIdx) + "_screen" + targetFilename.substring(extIdx);
+      else targetFilename += "_screen.gcode";
 
       File outFile = SD.open("/dump_zone/" + targetFilename, FILE_WRITE);
       if (!outFile) { 
@@ -503,7 +498,7 @@ void launchPatchedPrint(String filename, int source, bool bBed, bool bTime, bool
       uint32_t processedBytes = 0;
       int lastP = -1;
 
-      tft.drawRect(30, 90, 260, 20, tft.color565(50, 55, 65));
+      tft.drawRect(PX(30), PY(90), PX(260), PY(20), tft.color565(50, 55, 65));
 
       if (source == 0) { 
           HTTPClient http;
@@ -559,9 +554,9 @@ void launchPatchedPrint(String filename, int source, bool bBed, bool bTime, bool
                       if (totalBytes > 0) {
                           int p = (processedBytes * 100) / totalBytes;
                           if (p > lastP && p <= 100) {
-                              tft.fillRect(32, 92, (int)((p / 100.0) * 256), 16, ACCENT_CYAN);
+                              tft.fillRect(PX(32), PY(92), (int)((p / 100.0) * PX(256)), PY(16), ACCENT_CYAN);
                               tft.setTextColor(BG_COLOR);
-                              tft.drawString(String(p) + "%", 160, 100, 1);
+                              tft.drawString(String(p) + "%", SCREEN_W/2, PY(100), 1);
                               lastP = p;
                           }
                       }
@@ -619,9 +614,9 @@ void launchPatchedPrint(String filename, int source, bool bBed, bool bTime, bool
                   if (totalBytes > 0) {
                       int p = (processedBytes * 100) / totalBytes;
                       if (p > lastP && p <= 100) {
-                          tft.fillRect(32, 92, (int)((p / 100.0) * 256), 16, ACCENT_CYAN);
+                          tft.fillRect(PX(32), PY(92), (int)((p / 100.0) * PX(256)), PY(16), ACCENT_CYAN);
                           tft.setTextColor(BG_COLOR);
-                          tft.drawString(String(p) + "%", 160, 100, 1);
+                          tft.drawString(String(p) + "%", SCREEN_W/2, PY(100), 1);
                           lastP = p;
                       }
                   }
@@ -634,7 +629,7 @@ void launchPatchedPrint(String filename, int source, bool bBed, bool bTime, bool
       outFile.close();
 
       tft.setTextColor(TFT_WHITE, BG_COLOR);
-      tft.drawString("Uploading Patched File...", 160, 130, 1);
+      tft.drawString("Uploading Patched File...", SCREEN_W/2, PY(130), 1);
       
       if(!uploadFileToKlipper("dump_zone/" + targetFilename, targetFilename, 150)) {
           showToast("Error", "Upload to printer failed!", true);
@@ -642,7 +637,7 @@ void launchPatchedPrint(String filename, int source, bool bBed, bool bTime, bool
       }
   } else {
       if (source == 1) {
-          tft.drawString("Uploading to Printer...", 160, 110, 1);
+          tft.drawString("Uploading to Printer...", SCREEN_W/2, PY(110), 1);
           if(!uploadFileToKlipper(filename, targetFilename, 130)) {
               showToast("Error", "Upload failed", true);
               activeModal = 0; currentTab = 0; forceRedrawForToast = true; return;
@@ -651,7 +646,7 @@ void launchPatchedPrint(String filename, int source, bool bBed, bool bTime, bool
   }
 
   tft.setTextColor(TFT_WHITE, BG_COLOR);
-  tft.drawString("Configuring & Launching...", 160, 200, 1);
+  tft.drawString("Configuring & Launching...", SCREEN_W/2, PY(200), 1);
 
   sendGcode("SET_GCODE_VARIABLE MACRO=print_task_config VARIABLE=auto_bed_leveling VALUE=" + String(bBed ? 1 : 0));
   sendGcode("SET_GCODE_VARIABLE MACRO=print_task_config VARIABLE=time_lapse_camera VALUE=" + String(bTime ? 1 : 0));
@@ -673,16 +668,16 @@ void launchPatchedPrint(String filename, int source, bool bBed, bool bTime, bool
 void setup() {
   Serial.begin(115200);
 
+  // Initializing LCD
   pinMode(TFT_BL, OUTPUT);
   digitalWrite(TFT_BL, HIGH);
   tft.init();
   tft.setRotation(3); 
-  
+
   preferences.begin("u1_config", false);
   invertDisplay = preferences.getBool("invertDisplay", false);
   tft.invertDisplay(invertDisplay);
 
-  // LOAD THEME SETTINGS
   currentTheme = preferences.getInt("theme", 0);
   customBG = preferences.getString("customBG", customBG);
   customSidebar = preferences.getString("customSidebar", customSidebar);
@@ -692,21 +687,40 @@ void setup() {
   applyTheme();
 
   tft.setTextSize(1); 
-  
   drawBootLogo();
 
+#ifdef BOARD_CYD_28
   touch.setRotation(3);
-
   if (SD.begin(SD_CS)) {
     sdCardReady = true;
     sdCardTotal = SD.totalBytes() / (1024 * 1024); 
     sdCardUsed = SD.usedBytes() / (1024 * 1024);
     loadFilesFromSD();
   }
+#elif defined(BOARD_40_INCH)
+  // Dedicated VSPI setup for 4.0" SD card as defined in the vendor spec
+  pinMode(SD_CS, OUTPUT);
+  digitalWrite(SD_CS, HIGH);
+  sdSPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+  if (SD.begin(SD_CS, sdSPI, 4000000)) {
+    sdCardReady = true;
+    sdCardTotal = SD.totalBytes() / (1024 * 1024); 
+    sdCardUsed = SD.usedBytes() / (1024 * 1024);
+    loadFilesFromSD();
+  }
+#endif
+
+  // Generate unique network identifier using chip MAC address
+  String macSuffix = WiFi.macAddress();
+  macSuffix.replace(":", "");
+  macSuffix = macSuffix.substring(macSuffix.length() - 4);
+
+  String defaultMDNS = "u1-display-" + macSuffix;
+  String defaultAP = "Snapmaker-U1-" + macSuffix;
 
   String savedIP = preferences.getString("printer_ip", "192.168.87.125");
   String savedName = preferences.getString("printer_name", "Snapmaker U1");
-  String savedMDNS = preferences.getString("mdns_name", "u1-display");
+  String savedMDNS = preferences.getString("mdns_name", defaultMDNS);
   
   savedIP.toCharArray(printerIP, sizeof(printerIP));
   savedName.toCharArray(printerName, sizeof(printerName));
@@ -721,19 +735,21 @@ void setup() {
   }
   
   bool loadedFromSD = false;
+#ifdef BOARD_CYD_28
   if (sdCardReady && SD.exists("/calibration.json")) {
     File file = SD.open("/calibration.json", FILE_READ);
     if (file) {
       JsonDocument doc;
       if (!deserializeJson(doc, file)) {
-        touch.setCal(doc["calXMin"], doc["calXMax"], doc["calYMin"], doc["calYMax"], 320, 240, doc["swapXY"]);
-        loadedFromSD = true;
-        isCalibrated = true;
+        if(doc["is_40"].isNull()) {
+            touch.setCal(doc["calXMin"], doc["calXMax"], doc["calYMin"], doc["calYMax"], SCREEN_W, SCREEN_H, doc["swapXY"]);
+            loadedFromSD = true;
+            isCalibrated = true;
+        }
       }
       file.close();
     }
   }
-
   if (!loadedFromSD) {
     isCalibrated = preferences.getBool("isCalibrated", false);
     if (isCalibrated) {
@@ -742,11 +758,41 @@ void setup() {
       int vmin = preferences.getInt("calYMin", 721);
       int vmax = preferences.getInt("calYMax", 3448);
       bool xyswap = preferences.getBool("swapXY", true);
-      touch.setCal(hmin, hmax, vmin, vmax, 320, 240, xyswap);
+      touch.setCal(hmin, hmax, vmin, vmax, SCREEN_W, SCREEN_H, xyswap);
     } else {
-      touch.setCal(495, 3398, 721, 3448, 320, 240, 1);
+      touch.setCal(495, 3398, 721, 3448, SCREEN_W, SCREEN_H, 1);
     }
   }
+#elif defined(BOARD_40_INCH)
+  if (sdCardReady && SD.exists("/calibration.json")) {
+    File file = SD.open("/calibration.json", FILE_READ);
+    if (file) {
+      JsonDocument doc;
+      if (!deserializeJson(doc, file)) {
+          if(!doc["is_40"].isNull()) {
+              uint16_t calData[5];
+              for(int i=0; i<5; i++) calData[i] = doc["cal"][i];
+              tft.setTouch(calData);
+              loadedFromSD = true;
+              isCalibrated = true;
+          }
+      }
+      file.close();
+    }
+  }
+  if (!loadedFromSD) {
+     isCalibrated = preferences.getBool("isCalibrated", false);
+     if (isCalibrated) {
+        uint16_t calData[5];
+        calData[0] = preferences.getInt("cal0", 0);
+        calData[1] = preferences.getInt("cal1", 0);
+        calData[2] = preferences.getInt("cal2", 0);
+        calData[3] = preferences.getInt("cal3", 0);
+        calData[4] = preferences.getInt("cal4", 0);
+        tft.setTouch(calData);
+     }
+  }
+#endif
 
   WiFiManager wm;
   wm.setSaveConfigCallback(saveConfigCallback);
@@ -758,7 +804,8 @@ void setup() {
   wm.addParameter(&custom_ip);
   wm.addParameter(&custom_name);
 
-  if (!wm.autoConnect("Snapmaker-U1-Display")) ESP.restart();
+  // Uses unique AP Name per screen based on MAC Address
+  if (!wm.autoConnect(defaultAP.c_str())) ESP.restart();
   
   if (shouldSaveConfig) {
     strcpy(printerIP, custom_ip.getValue());
@@ -782,7 +829,6 @@ void setup() {
   }, handleFileUpload);
 
   server.begin();
-
   fetchKlipperFiles();
 
   if (!isCalibrated) {
@@ -797,22 +843,16 @@ void setup() {
 void loop() {
   server.handleClient(); 
 
-  if (touch.Pressed()) {
+  int touchX = 0, touchY = 0;
+  if (getTouchCoord(touchX, touchY)) {
     if (millis() - lastTouchTime > 250) { 
       lastTouchTime = millis(); 
-      
-      int touchX = touch.X();
-      int touchY = touch.Y();
-
       bool modalForceClosed = false;
 
-      // RULE 1: SIDEBAR ALWAYS WINS
-      if (activeModal > 0 && touchX < 42) {
+      if (activeModal > 0 && touchX < PX(42)) {
           activeModal = 0;
           modalForceClosed = true;
       }
-      
-      // RULE 2: PROCESS MODAL TOUCHES
       else if (activeModal > 0) {
         bool closedModal = false;
         bool returnToTool = false;
@@ -823,9 +863,9 @@ void loop() {
           for (int i = 0; i < 6; i++) {
             int r = i / 2;
             int c = i % 2;
-            int bx = 60 + c * 130;
-            int by = 45 + r * 60;
-            if (touchX > bx && touchX < bx + 110 && touchY > by && touchY < by + 45) {
+            int bx = PX(60) + c * PX(130);
+            int by = PY(45) + r * PY(60);
+            if (touchX > bx && touchX < bx + PX(110) && touchY > by && touchY < by + PY(45)) {
                int val = (activeModal == 1) ? presetBed[i] : presetTool[i];
                if (activeModal == 1) { sendGcode("M140 S" + String(val)); showToast("Heating Bed", String(val) + "C"); }
                else { 
@@ -843,14 +883,14 @@ void loop() {
         } 
         else if (activeModal == 7) {
           for (int c = 0; c < 3; c++) {
-            int bx = 50 + c * 75;
-            if (touchX > bx && touchX < bx + 65 && touchY > 55 && touchY < 100) {
+            int bx = PX(50) + c * PX(75);
+            if (touchX > bx && touchX < bx + PX(65) && touchY > PY(55) && touchY < PY(100)) {
                int speeds[] = {50, 100, 150};
                sendGcode("M220 S" + String(speeds[c]));
                showToast("Print Speed", String(speeds[c]) + "%");
                closedModal = true; handledTouch = true; break;
             }
-            if (touchX > bx && touchX < bx + 65 && touchY > 125 && touchY < 170) {
+            if (touchX > bx && touchX < bx + PX(65) && touchY > PY(125) && touchY < PY(170)) {
                int fans[] = {0, 127, 255};
                sendGcode("M106 S" + String(fans[c]));
                showToast("Part Fan", String((int)(fans[c]*100/255)) + "%");
@@ -863,15 +903,15 @@ void loop() {
           for (int i = 0; i < 4; i++) {
             int r = i / 2;
             int c = i % 2;
-            int bx = 60 + c * 130;
-            int by = 50 + r * 60;
-            if (touchX > bx && touchX < bx + 110 && touchY > by && touchY < by + 45) {
+            int bx = PX(60) + c * PX(130);
+            int by = PY(50) + r * PY(60);
+            if (touchX > bx && touchX < bx + PX(110) && touchY > by && touchY < by + PY(45)) {
                sendGcode("T" + String(i));
                showToast("Tool Change", "Swapped to T" + String(i+1));
                closedModal = true; handledTouch = true; break;
             }
           }
-          if (!handledTouch && touchX > 60 && touchX < 300 && touchY > 180 && touchY < 220) {
+          if (!handledTouch && touchX > PX(60) && touchX < PX(300) && touchY > PY(180) && touchY < PY(220)) {
              String parkCmd = (activeTool <= 0) ? "park_extruder" : "park_extruder" + String(activeTool);
              sendGcode(parkCmd); 
              showToast("Tool Change", "Parking Tool");
@@ -882,40 +922,40 @@ void loop() {
         else if (activeModal >= 10 && activeModal <= 13) {
           int tIdx = activeModal - 10;
           
-          if (touchY < 40) { handledTouch = true; } 
+          if (touchY < PY(40)) { handledTouch = true; } 
           
-          else if (touchY > 40 && touchY < 75) {
-            if (touchX > 50 && touchX < 105) { sendGcode("M104 T" + String(tIdx) + " S0"); showToast("Heater Off", "Tool " + String(tIdx+1)); handledTouch = true; }
-            else if (touchX > 115 && touchX < 170) { sendGcode("M104 T" + String(tIdx) + " S200"); showToast("Heating", "Tool " + String(tIdx+1) + " to 200C"); handledTouch = true; }
-            else if (touchX > 180 && touchX < 235) { sendGcode("M104 T" + String(tIdx) + " S220"); showToast("Heating", "Tool " + String(tIdx+1) + " to 220C"); handledTouch = true; }
-            else if (touchX > 245 && touchX < 300) { sendGcode("M104 T" + String(tIdx) + " S240"); showToast("Heating", "Tool " + String(tIdx+1) + " to 240C"); handledTouch = true; }
+          else if (touchY > PY(40) && touchY < PY(75)) {
+            if (touchX > PX(50) && touchX < PX(105)) { sendGcode("M104 T" + String(tIdx) + " S0"); showToast("Heater Off", "Tool " + String(tIdx+1)); handledTouch = true; }
+            else if (touchX > PX(115) && touchX < PX(170)) { sendGcode("M104 T" + String(tIdx) + " S200"); showToast("Heating", "Tool " + String(tIdx+1) + " to 200C"); handledTouch = true; }
+            else if (touchX > PX(180) && touchX < PX(235)) { sendGcode("M104 T" + String(tIdx) + " S220"); showToast("Heating", "Tool " + String(tIdx+1) + " to 220C"); handledTouch = true; }
+            else if (touchX > PX(245) && touchX < PX(300)) { sendGcode("M104 T" + String(tIdx) + " S240"); showToast("Heating", "Tool " + String(tIdx+1) + " to 240C"); handledTouch = true; }
           }
-          else if (touchY > 90 && touchY < 125) {
-            if (touchX > 50 && touchX < 170) { 
+          else if (touchY > PY(90) && touchY < PY(125)) {
+            if (touchX > PX(50) && touchX < PX(170)) { 
               kbInput = filType[tIdx];
               kbMode = 0; 
               activeModal = 20 + tIdx; 
               drawKeyboardModal(tIdx); 
               return; 
             } 
-            else if (touchX > 180 && touchX < 300) { 
+            else if (touchX > PX(180) && touchX < PX(300)) { 
               activeModal = 30 + tIdx; 
               drawColorPickerModal(tIdx); 
               return; 
             }
           }
-          else if (touchY > 140 && touchY < 175) {
+          else if (touchY > PY(140) && touchY < PY(175)) {
             String toolName = (tIdx == 0) ? "extruder" : "extruder" + String(tIdx);
             String pickCmd = (tIdx == 0) ? "pick_extruder" : "pick_extruder" + String(tIdx);
             String parkCmd = (tIdx == 0) ? "park_extruder" : "park_extruder" + String(tIdx);
 
-            if (touchX > 50 && touchX < 170) {
+            if (touchX > PX(50) && touchX < PX(170)) {
               if (toolAttached[tIdx]) { sendGcode(parkCmd); showToast("Tool", "Parking..."); }
               else { sendGcode(pickCmd); showToast("Tool", "Attaching T" + String(tIdx+1)); }
               toolAttached[tIdx] = !toolAttached[tIdx];
               drawToolModal(tIdx);
               handledTouch = true;
-            } else if (touchX > 180 && touchX < 300) {
+            } else if (touchX > PX(180) && touchX < PX(300)) {
               if (toolLoaded[tIdx]) { 
                 sendGcode(pickCmd + "\nACTIVATE_EXTRUDER EXTRUDER=" + toolName + "\nINNER_FILAMENT_UNLOAD"); 
                 showToast("Filament", "Unloading T" + String(tIdx+1)); 
@@ -929,20 +969,20 @@ void loop() {
               handledTouch = true;
             }
           }
-          else if (touchY > 185 && touchX > 50 && touchX < 300) {
+          else if (touchY > PY(185) && touchX > PX(50) && touchX < PX(300)) {
             closedModal = true; handledTouch = true;
           }
           if (!handledTouch) closedModal = true;
         }
         else if ((activeModal >= 20 && activeModal <= 23) || activeModal == 51) {
           int tIdx = (activeModal == 51) ? 0 : activeModal - 20;
-          if (touchY < 70) { handledTouch = true; }
-          else if (touchY >= 70 && touchY < 195) {
-              int r = (touchY - 70) / 31; 
+          if (touchY < PY(70)) { handledTouch = true; }
+          else if (touchY >= PY(70) && touchY < PY(195)) {
+              int r = (touchY - PY(70)) / PY(31); 
               if (r < 0) r = 0; if (r > 3) r = 3;
               
-              int c = (touchX - 45) / 27; 
-              if (touchX > 275) c = 9; 
+              int c = (touchX - PX(45)) / PX(27); 
+              if (touchX > PX(275)) c = 9; 
               if (c < 0) c = 0; if (c > 9) c = 9;
               
               char key = kbRows[r][c];
@@ -955,18 +995,18 @@ void loop() {
               updateKeyboardInputBox(); 
               handledTouch = true;
           }
-          else if (touchY >= 195) {
-             if (touchX < 125) { 
+          else if (touchY >= PY(195)) {
+             if (touchX < PX(125)) { 
                 closedModal = true; 
                 if(activeModal != 51) { returnToTool = true; targetTool = tIdx; }
              }
-             else if (touchX >= 125 && touchX < 230) { 
+             else if (touchX >= PX(125) && touchX < PX(230)) { 
                 if ((kbMode == 0 || kbMode == 3) && kbInput.length() < ((kbMode == 3) ? 20 : 10)) { 
                     kbInput += " "; updateKeyboardInputBox(); 
                 }
                 handledTouch = true;
              }
-             else if (touchX >= 230) { 
+             else if (touchX >= PX(230)) { 
                 if (kbMode == 3) {
                    kbInput.toCharArray(printerName, sizeof(printerName));
                    preferences.putString("printer_name", printerName);
@@ -992,10 +1032,10 @@ void loop() {
           }
         }
         else if (activeModal == 50) { 
-          if (touchY < 70) { handledTouch = true; }
-          else if (touchY >= 70 && touchY < 200) {
-              int r = (touchY - 75) / 32;
-              int c = (touchX - 70) / 60;
+          if (touchY < PY(70)) { handledTouch = true; }
+          else if (touchY >= PY(70) && touchY < PY(200)) {
+              int r = (touchY - PY(75)) / PY(32);
+              int c = (touchX - PX(70)) / PX(60);
               if (r >= 0 && r < 4 && c >= 0 && c < 3) {
                   int idx = r * 3 + c;
                   if (idx == 11) { 
@@ -1011,8 +1051,8 @@ void loop() {
               }
               handledTouch = true;
           }
-          else if (touchY >= 200) {
-              if (touchX < 160) { 
+          else if (touchY >= PY(200)) {
+              if (touchX < PX(160)) { 
                   closedModal = true; 
               } else { 
                   kbInput.toCharArray(printerIP, sizeof(printerIP));
@@ -1025,10 +1065,10 @@ void loop() {
         }
         else if (activeModal >= 30 && activeModal <= 33) {
           int tIdx = activeModal - 30;
-          if (touchY >= 40 && touchY < 155) {
-              int r = (touchY - 40) / 55;
+          if (touchY >= PY(40) && touchY < PY(155)) {
+              int r = (touchY - PY(40)) / PY(55);
               if (r < 0) r = 0; if (r > 1) r = 1;
-              int c = (touchX - 42) / 55;
+              int c = (touchX - PX(42)) / PX(55);
               if (c < 0) c = 0; if (c > 4) c = 4;
               
               int i = r * 5 + c;
@@ -1040,28 +1080,28 @@ void loop() {
                   closedModal = true; returnToTool = true; targetTool = tIdx; 
               }
           }
-          else if (touchY >= 155 && touchY < 195) { 
+          else if (touchY >= PY(155) && touchY < PY(195)) { 
               kbMode = 1; 
               kbInput = "";
               activeModal = 20 + tIdx; 
               drawKeyboardModal(tIdx);
               return; 
           }
-          else if (touchY >= 195) { 
+          else if (touchY >= PY(195)) { 
               closedModal = true; returnToTool = true; targetTool = tIdx; 
           }
         }
         else if (activeModal == 40) { 
-          if (touchY >= 40 && touchY < 70 && touchX < 200) { optBedLevel = !optBedLevel; drawPrintOptionsModal(); handledTouch=true; }
-          else if (touchY >= 70 && touchY < 100 && touchX < 200) { optTimelapse = !optTimelapse; drawPrintOptionsModal(); handledTouch=true; }
-          else if (touchY >= 100 && touchY < 130 && touchX < 200) { optAdvMap = !optAdvMap; drawPrintOptionsModal(); handledTouch=true; }
-          else if (touchY >= 140 && touchY < 195) {
-             int i = (touchX - 50) / 55;
+          if (touchY >= PY(40) && touchY < PY(70) && touchX < PX(200)) { optBedLevel = !optBedLevel; drawPrintOptionsModal(); handledTouch=true; }
+          else if (touchY >= PY(70) && touchY < PY(100) && touchX < PX(200)) { optTimelapse = !optTimelapse; drawPrintOptionsModal(); handledTouch=true; }
+          else if (touchY >= PY(100) && touchY < PY(130) && touchX < PX(200)) { optAdvMap = !optAdvMap; drawPrintOptionsModal(); handledTouch=true; }
+          else if (touchY >= PY(140) && touchY < PY(195)) {
+             int i = (touchX - PX(50)) / PX(55);
              if(i >= 0 && i < 4) { optT0 = i; drawPrintOptionsModal(); }
              handledTouch=true;
           }
-          else if (touchY >= 195) {
-             if (touchX < 145) { 
+          else if (touchY >= PY(195)) {
+             if (touchX < PX(145)) { 
                  closedModal = true; handledTouch=true; 
              } else {
                  launchPatchedPrint(selectedFile, printTabSource, optBedLevel, optTimelapse, optAdvMap, optT0);
@@ -1089,8 +1129,8 @@ void loop() {
         if (!modalForceClosed) return; 
       }
 
-      if (touchX < 42) {
-        int tappedTab = touchY / 48; 
+      if (touchX < PX(42)) {
+        int tappedTab = touchY / (SCREEN_H / 5); 
         if (tappedTab < 5) {
           if (tappedTab != currentTab || modalForceClosed) {
             currentTab = tappedTab;
@@ -1115,21 +1155,21 @@ void loop() {
       } 
       
       if (currentTab == 0) {
-        if (touchX > 48 && touchX < 178 && touchY > 22 && touchY < 76) { activeModal = 1; drawTempModal(1); }
-        else if (touchX > 184 && touchX < 314 && touchY > 22 && touchY < 76) { activeModal = 8; drawActiveToolModal(); }
-        else if (touchX > 48 && touchX < 178 && touchY > 82 && touchY < 136) { activeModal = 2; drawTempModal(2); }
-        else if (touchX > 184 && touchX < 314 && touchY > 82 && touchY < 136) { activeModal = 7; drawSpeedFanModal(); }
+        if (touchX > PX(48) && touchX < PX(178) && touchY > PY(22) && touchY < PY(76)) { activeModal = 1; drawTempModal(1); }
+        else if (touchX > PX(184) && touchX < PX(314) && touchY > PY(22) && touchY < PY(76)) { activeModal = 8; drawActiveToolModal(); }
+        else if (touchX > PX(48) && touchX < PX(178) && touchY > PY(82) && touchY < PY(136)) { activeModal = 2; drawTempModal(2); }
+        else if (touchX > PX(184) && touchX < PX(314) && touchY > PY(82) && touchY < PY(136)) { activeModal = 7; drawSpeedFanModal(); }
         
-        else if (touchX > 48 && touchX < 178 && touchY > 174 && touchY < 226) {
+        else if (touchX > PX(48) && touchX < PX(178) && touchY > PY(174) && touchY < PY(226)) {
           if (currentState == "paused") { sendGcode("RESUME"); showToast("Command", "Resuming print..."); }
           else { sendGcode("PAUSE"); showToast("Command", "Pausing print..."); }
         }
-        else if (touchX > 184 && touchX < 314 && touchY > 174 && touchY < 226) { sendGcode("CANCEL_PRINT"); showToast("Command", "Cancelling print...", true); }
+        else if (touchX > PX(184) && touchX < PX(314) && touchY > PY(174) && touchY < PY(226)) { sendGcode("CANCEL_PRINT"); showToast("Command", "Cancelling print...", true); }
       }
       else if (currentTab == 1) {
         for (int i=0; i<4; i++) {
-           int bx = 45 + (i * 69);
-           if (touchX > bx && touchX < bx + 64 && touchY > 40 && touchY < 200) {
+           int bx = PX(45) + (i * PX(69));
+           if (touchX > bx && touchX < bx + PX(64) && touchY > PY(40) && touchY < PY(200)) {
                activeModal = 10 + i; 
                drawToolModal(i);
                break;
@@ -1137,31 +1177,31 @@ void loop() {
         }
       }
       else if (currentTab == 2) {
-        if (touchY > 20 && touchY < 70) {
-          if (touchX > 60 && touchX < 110) moveDist = 0.1;
-          if (touchX > 120 && touchX < 170) moveDist = 1.0;
-          if (touchX > 180 && touchX < 230) moveDist = 10.0;
-          if (touchX > 240 && touchX < 290) moveDist = 50.0;
+        if (touchY > PY(20) && touchY < PY(70)) {
+          if (touchX > PX(60) && touchX < PX(110)) moveDist = 0.1;
+          if (touchX > PX(120) && touchX < PX(170)) moveDist = 1.0;
+          if (touchX > PX(180) && touchX < PX(230)) moveDist = 10.0;
+          if (touchX > PX(240) && touchX < PX(290)) moveDist = 50.0;
           drawMoveTab(); 
         } else {
-          if (touchX > 120 && touchX < 160 && touchY > 80 && touchY < 120) { sendGcode("G91\nG1 Y" + String(moveDist) + " F6000\nG90"); showToast("Jog", "Y+ " + String(moveDist)); }
-          if (touchX > 120 && touchX < 160 && touchY > 180 && touchY < 220) { sendGcode("G91\nG1 Y-" + String(moveDist) + " F6000\nG90"); showToast("Jog", "Y- " + String(moveDist)); }
-          if (touchX > 70 && touchX < 110 && touchY > 130 && touchY < 170) { sendGcode("G91\nG1 X-" + String(moveDist) + " F6000\nG90"); showToast("Jog", "X- " + String(moveDist)); }
-          if (touchX > 170 && touchX < 210 && touchY > 130 && touchY < 170) { sendGcode("G91\nG1 X" + String(moveDist) + " F6000\nG90"); showToast("Jog", "X+ " + String(moveDist)); }
-          if (touchX > 120 && touchX < 160 && touchY > 130 && touchY < 170) { sendGcode("G28"); showToast("Homing", "All Axes"); }
+          if (touchX > PX(120) && touchX < PX(160) && touchY > PY(80) && touchY < PY(120)) { sendGcode("G91\nG1 Y" + String(moveDist) + " F6000\nG90"); showToast("Jog", "Y+ " + String(moveDist)); }
+          if (touchX > PX(120) && touchX < PX(160) && touchY > PY(180) && touchY < PY(220)) { sendGcode("G91\nG1 Y-" + String(moveDist) + " F6000\nG90"); showToast("Jog", "Y- " + String(moveDist)); }
+          if (touchX > PX(70) && touchX < PX(110) && touchY > PY(130) && touchY < PY(170)) { sendGcode("G91\nG1 X-" + String(moveDist) + " F6000\nG90"); showToast("Jog", "X- " + String(moveDist)); }
+          if (touchX > PX(170) && touchX < PX(210) && touchY > PY(130) && touchY < PY(170)) { sendGcode("G91\nG1 X" + String(moveDist) + " F6000\nG90"); showToast("Jog", "X+ " + String(moveDist)); }
+          if (touchX > PX(120) && touchX < PX(160) && touchY > PY(130) && touchY < PY(170)) { sendGcode("G28"); showToast("Homing", "All Axes"); }
           
-          if (touchX > 235 && touchX < 285 && touchY > 80 && touchY < 120) { sendGcode("G91\nG1 Z" + String(moveDist) + " F600\nG90"); showToast("Jog", "Z+ " + String(moveDist)); }
-          if (touchX > 235 && touchX < 285 && touchY > 130 && touchY < 170) { sendGcode("G28 Z"); showToast("Homing", "Z axis"); }
-          if (touchX > 235 && touchX < 285 && touchY > 180 && touchY < 220) { sendGcode("G91\nG1 Z-" + String(moveDist) + " F600\nG90"); showToast("Jog", "Z- " + String(moveDist)); }
+          if (touchX > PX(235) && touchX < PX(285) && touchY > PY(80) && touchY < PY(120)) { sendGcode("G91\nG1 Z" + String(moveDist) + " F600\nG90"); showToast("Jog", "Z+ " + String(moveDist)); }
+          if (touchX > PX(235) && touchX < PX(285) && touchY > PY(130) && touchY < PY(170)) { sendGcode("G28 Z"); showToast("Homing", "Z axis"); }
+          if (touchX > PX(235) && touchX < PX(285) && touchY > PY(180) && touchY < PY(220)) { sendGcode("G91\nG1 Z-" + String(moveDist) + " F600\nG90"); showToast("Jog", "Z- " + String(moveDist)); }
         }
       }
       else if (currentTab == 3) {
-        if (touchY < 40) {
-            if (touchX > 50 && touchX < 155 && printTabSource != 0) { 
+        if (touchY < PY(40)) {
+            if (touchX > PX(50) && touchX < PX(155) && printTabSource != 0) { 
                 printTabSource = 0; fileScrollIndex = 0; fetchKlipperFiles(); drawPrintTab(); 
                 showToast("File Source", "Loaded Printer Klipper Files");
             }
-            if (touchX >= 160 && touchX < 265 && printTabSource != 1) { 
+            if (touchX >= PX(160) && touchX < PX(265) && printTabSource != 1) { 
                 printTabSource = 1; fileScrollIndex = 0; loadFilesFromSD(); drawPrintTab(); 
                 showToast("File Source", "Loaded Screen SD Files");
             }
@@ -1171,11 +1211,11 @@ void loop() {
         int count = printTabSource == 0 ? klipperFileCount : fileCount;
         String* list = printTabSource == 0 ? klipperFileList : fileList;
 
-        if (touchX > 260) {
-           if (touchY < 130 && fileScrollIndex > 0) { fileScrollIndex--; drawPrintTab(); }
-           if (touchY > 130 && fileScrollIndex + 4 < count) { fileScrollIndex++; drawPrintTab(); }
-        } else if (touchX > 50 && touchX < 250) {
-           int i = (touchY - 45) / 45;
+        if (touchX > PX(260)) {
+           if (touchY < PY(130) && fileScrollIndex > 0) { fileScrollIndex--; drawPrintTab(); }
+           if (touchY > PY(130) && fileScrollIndex + 4 < count) { fileScrollIndex++; drawPrintTab(); }
+        } else if (touchX > PX(50) && touchX < PX(250)) {
+           int i = (touchY - PY(45)) / PY(45);
            if (i >= 0 && i < 4) {
               int idx = fileScrollIndex + i;
               if (idx < count) {
@@ -1187,36 +1227,36 @@ void loop() {
         }
       }
      else if (currentTab == 4) {
-        if (touchX > 48 && touchX < 178 && touchY > 125 && touchY < 165) { 
+        if (touchX > PX(48) && touchX < PX(178) && touchY > PY(125) && touchY < PY(165)) { 
             kbInput = String(printerIP);
             kbMode = 2; // IP Mode
             activeModal = 50; 
             drawKeyboardModal(0);
         }
-        else if (touchX > 184 && touchX < 314 && touchY > 125 && touchY < 165) {
+        else if (touchX > PX(184) && touchX < PX(314) && touchY > PY(125) && touchY < PY(165)) {
             kbInput = String(printerName);
             kbMode = 3; // Name Mode
             activeModal = 51; 
             drawKeyboardModal(0);
         }
-        else if (touchX > 48 && touchX < 178 && touchY > 175 && touchY < 215) {
+        else if (touchX > PX(48) && touchX < PX(178) && touchY > PY(175) && touchY < PY(215)) {
           touchCalibrate();
           tft.fillScreen(BG_COLOR);
           drawSidebar();
           drawSettingsTab();
         }
-        else if (touchX > 184 && touchX < 314 && touchY > 175 && touchY < 215) {
+        else if (touchX > PX(184) && touchX < PX(314) && touchY > PY(175) && touchY < PY(215)) {
           tft.fillScreen(BG_COLOR);
           tft.setTextColor(TFT_YELLOW);
           tft.setTextDatum(MC_DATUM);
-          tft.drawString("Resetting Wi-Fi...", 160, 100, 2);
+          tft.drawString("Resetting Wi-Fi...", SCREEN_W/2, PY(100), 2);
           delay(1500);
           WiFiManager wm;
           wm.resetSettings();
           ESP.restart();
         }
-        else if (touchX > 48 && touchX < 200 && touchY > 220) {
-          showToast("Nates Print Shop", "Custom Firmware v2.0 Active");
+        else if (touchX > PX(48) && touchX < PX(200) && touchY > PY(220)) {
+          showToast("Nates Print Shop", "Custom Firmware " + String(FW_VERSION) + " Active");
         }
       }
     }
@@ -1260,11 +1300,10 @@ void loop() {
     }
     lastUpdate = millis();
   }
-}
-
-void drawCornerMarker(int corner, uint16_t color) {
-  int w = tft.width();
-  int h = tft.height();
+  
+}void drawCornerMarker(int corner, uint16_t color) {
+  int w = SCREEN_W;
+  int h = SCREEN_H;
   if (corner == 0) { tft.drawFastHLine(0, 0, 15, color); tft.drawLine(0, 0, 15, 15, color); tft.drawFastVLine(0, 0, 15, color); } 
   else if (corner == 1) { tft.drawFastHLine(0, h - 1, 15, color); tft.drawLine(0, h - 1, 15, h - 16, color); tft.drawFastVLine(0, h - 16, 15, color); } 
   else if (corner == 2) { tft.drawFastHLine(w - 16, 0, 15, color); tft.drawLine(w - 16, 15, w - 1, 0, color); tft.drawFastVLine(w - 1, 0, 15, color); } 
@@ -1272,13 +1311,14 @@ void drawCornerMarker(int corner, uint16_t color) {
 }
 
 void touchCalibrate() {
+#ifdef BOARD_CYD_28
   long val[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-  touch.setCal(0, 4095, 0, 4095, 320, 240, 0);
+  touch.setCal(0, 4095, 0, 4095, SCREEN_W, SCREEN_H, 0);
 
   tft.fillScreen(BG_COLOR);
   tft.setTextColor(TFT_WHITE, BG_COLOR);
   tft.setTextDatum(MC_DATUM); 
-  tft.drawString("Touch corners as indicated", 160, 120, 2);
+  tft.drawString("Touch corners as indicated", SCREEN_W/2, SCREEN_H/2, 2);
 
   for (int i = 0; i < 4; i++) {
     drawCornerMarker(i, TFT_RED);
@@ -1315,7 +1355,7 @@ void touchCalibrate() {
   if(cal_x1 == 0) cal_x1 = 1; if(cal_x2 == 0) cal_x2 = 1;
   if(cal_y1 == 0) cal_y1 = 1; if(cal_y2 == 0) cal_y2 = 1;
 
-  touch.setCal(cal_x1, cal_x2, cal_y1, cal_y2, 320, 240, xyswap);
+  touch.setCal(cal_x1, cal_x2, cal_y1, cal_y2, SCREEN_W, SCREEN_H, xyswap);
 
   preferences.putInt("calXMin", cal_x1); preferences.putInt("calXMax", cal_x2);
   preferences.putInt("calYMin", cal_y1); preferences.putInt("calYMax", cal_y2);
@@ -1334,67 +1374,107 @@ void touchCalibrate() {
   isCalibrated = true;
   tft.fillScreen(BG_COLOR);
   tft.setTextColor(TFT_GREEN, BG_COLOR); 
-  tft.drawString("CALIBRATION SAVED!", 160, 120, 2);
+  tft.drawString("CALIBRATION SAVED!", SCREEN_W/2, SCREEN_H/2, 2);
   tft.setTextDatum(TL_DATUM);
   delay(1200);
+
+#elif defined(BOARD_40_INCH)
+
+  uint16_t calData[5];
+  tft.fillScreen(BG_COLOR);
+  tft.setTextColor(TFT_WHITE, BG_COLOR);
+  tft.setTextDatum(MC_DATUM); 
+  tft.drawString("Touch corners as indicated", SCREEN_W/2, SCREEN_H/2, 2);
+  
+  tft.calibrateTouch(calData, TFT_RED, BG_COLOR, 15);
+  
+  preferences.putInt("cal0", calData[0]);
+  preferences.putInt("cal1", calData[1]);
+  preferences.putInt("cal2", calData[2]);
+  preferences.putInt("cal3", calData[3]);
+  preferences.putInt("cal4", calData[4]);
+  preferences.putBool("isCalibrated", true);
+  
+  if (sdCardReady) {
+    File file = SD.open("/calibration.json", FILE_WRITE);
+    if (file) {
+      JsonDocument doc;
+      JsonArray calArray = doc["cal"].to<JsonArray>();
+      for(int i=0; i<5; i++) calArray.add(calData[i]);
+      doc["is_40"] = true;
+      serializeJson(doc, file); 
+      file.close();
+    }
+  }
+
+  tft.setTouch(calData);
+  isCalibrated = true;
+  tft.fillScreen(BG_COLOR);
+  tft.setTextColor(TFT_GREEN, BG_COLOR); 
+  tft.drawString("CALIBRATION SAVED!", SCREEN_W/2, SCREEN_H/2, 2);
+  tft.setTextDatum(TL_DATUM);
+  delay(1200);
+
+#endif
 }
 
 void drawSidebar() {
-  tft.fillRect(0, 0, 42, 240, SIDEBAR_COLOR);
+  tft.fillRect(0, 0, PX(42), SCREEN_H, SIDEBAR_COLOR);
   tft.setTextSize(1);
+  int stepY = SCREEN_H / 5;
   for (int i = 0; i < 5; i++) {
-    int y = i * 48;
+    int y = i * stepY;
     if (i == currentTab) {
-      tft.fillRect(0, y, 4, 48, ACCENT_CYAN); 
+      tft.fillRect(0, y, PX(4), stepY, ACCENT_CYAN); 
       tft.setTextColor(TFT_WHITE, SIDEBAR_COLOR);
     } else {
       tft.setTextColor(TEXT_GRAY, SIDEBAR_COLOR);
     }
     tft.setTextDatum(MC_DATUM);
-    if (i == 0) tft.drawString("H", 23, y + 24, 2); 
-    if (i == 1) tft.drawString("T", 23, y + 24, 2); 
-    if (i == 2) tft.drawString("M", 23, y + 24, 2); 
-    if (i == 3) tft.drawString("P", 23, y + 24, 2); 
-    if (i == 4) tft.drawString("S", 23, y + 24, 2); 
+    if (i == 0) tft.drawString("H", PX(23), y + (stepY/2), 2); 
+    if (i == 1) tft.drawString("T", PX(23), y + (stepY/2), 2); 
+    if (i == 2) tft.drawString("M", PX(23), y + (stepY/2), 2); 
+    if (i == 3) tft.drawString("P", PX(23), y + (stepY/2), 2); 
+    if (i == 4) tft.drawString("S", PX(23), y + (stepY/2), 2); 
   }
 }
 
 void drawHomeTab() {
-  tft.fillRect(42, 0, 278, 240, BG_COLOR);
+  tft.fillRect(PX(42), 0, SCREEN_W - PX(42), SCREEN_H, BG_COLOR);
   tft.setTextSize(1);
 
-  tft.fillRoundRect(48, 22, 130, 54, 6, CARD_COLOR);
-  tft.drawRoundRect(48, 22, 130, 54, 6, tft.color565(50, 55, 65));
+  tft.fillRoundRect(PX(48), PY(22), PX(130), PY(54), 6, CARD_COLOR);
+  tft.drawRoundRect(PX(48), PY(22), PX(130), PY(54), 6, tft.color565(50, 55, 65));
   tft.setTextDatum(TC_DATUM);
   tft.setTextColor(TEXT_GRAY, CARD_COLOR);
-  tft.drawString("BED TEMP", 113, 29, 1);
+  tft.drawString("BED TEMP", PX(113), PY(29), 1);
 
-  tft.fillRoundRect(184, 22, 130, 54, 6, CARD_COLOR);
-  tft.drawRoundRect(184, 22, 130, 54, 6, tft.color565(50, 55, 65));
-  tft.drawString("ACTIVE TOOL", 249, 29, 1);
+  tft.fillRoundRect(PX(184), PY(22), PX(130), PY(54), 6, CARD_COLOR);
+  tft.drawRoundRect(PX(184), PY(22), PX(130), PY(54), 6, tft.color565(50, 55, 65));
+  tft.drawString("ACTIVE TOOL", PX(249), PY(29), 1);
 
-  tft.fillRoundRect(48, 82, 130, 54, 6, CARD_COLOR);
-  tft.drawRoundRect(48, 82, 130, 54, 6, tft.color565(50, 55, 65));
-  tft.drawString("TOOL TEMP", 113, 89, 1);
+  tft.fillRoundRect(PX(48), PY(82), PX(130), PY(54), 6, CARD_COLOR);
+  tft.drawRoundRect(PX(48), PY(82), PX(130), PY(54), 6, tft.color565(50, 55, 65));
+  tft.drawString("TOOL TEMP", PX(113), PY(89), 1);
 
-  tft.fillRoundRect(184, 82, 130, 54, 6, CARD_COLOR);
-  tft.drawRoundRect(184, 82, 130, 54, 6, tft.color565(50, 55, 65));
-  tft.drawString("SPEED / FAN", 249, 89, 1);
+  tft.fillRoundRect(PX(184), PY(82), PX(130), PY(54), 6, CARD_COLOR);
+  tft.drawRoundRect(PX(184), PY(82), PX(130), PY(54), 6, tft.color565(50, 55, 65));
+  tft.drawString("SPEED / FAN", PX(249), PY(89), 1);
 
-  tft.fillRoundRect(48, 174, 130, 52, 6, BTN_BLUE);
+  tft.fillRoundRect(PX(48), PY(174), PX(130), PY(52), 6, BTN_BLUE);
   tft.setTextColor(TFT_WHITE, BTN_BLUE); tft.setTextDatum(MC_DATUM);
-  tft.drawString("II Pause", 113, 200, 2);
+  tft.drawString("II Pause", PX(113), PY(200), 2);
 
-  tft.fillRoundRect(184, 174, 130, 52, 6, BTN_RED);
+  tft.fillRoundRect(PX(184), PY(174), PX(130), PY(52), 6, BTN_RED);
   tft.setTextColor(tft.color565(255, 180, 180), BTN_RED);
-  tft.drawString("Stop", 249, 200, 2);
+  tft.drawString("Stop", PX(249), PY(200), 2);
 
   tft.setTextDatum(TL_DATUM); 
   updateDynamicUI();
 }
 
 void drawTempModal(int type) {
-  tft.fillRect(42, 0, 278, 240, BG_COLOR); 
+  tft.fillRect(PX(42), 0, SCREEN_W - PX(42), SCREEN_H, BG_COLOR); 
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(TFT_WHITE, BG_COLOR);
   
@@ -1403,149 +1483,149 @@ void drawTempModal(int type) {
   else if (type == 2) title = "Set Active Tool Temp";
   else if (type >= 10) title = "Set Tool " + String(type - 9) + " Temp";
   
-  tft.drawString(title, 42 + 278/2, 20, 2);
+  tft.drawString(title, PX(42) + (SCREEN_W-PX(42))/2, PY(20), 2);
 
   const int* vals = (type == 1) ? presetBed : presetTool;
 
   for(int i = 0; i < 6; i++) {
     int r = i / 2;
     int c = i % 2;
-    int x = 60 + c * 130;
-    int y = 45 + r * 60;
+    int x = PX(60) + c * PX(130);
+    int y = PY(45) + r * PY(60);
     
-    tft.fillRoundRect(x, y, 110, 45, 6, CARD_COLOR);
-    tft.drawRoundRect(x, y, 110, 45, 6, ACCENT_CYAN);
+    tft.fillRoundRect(x, y, PX(110), PY(45), 6, CARD_COLOR);
+    tft.drawRoundRect(x, y, PX(110), PY(45), 6, ACCENT_CYAN);
     
     tft.setTextColor(TFT_WHITE, CARD_COLOR);
-    if (vals[i] == 0) tft.drawString("OFF", x + 55, y + 22, 2);
-    else tft.drawString(String(vals[i]) + "C", x + 55, y + 22, 2);
+    if (vals[i] == 0) tft.drawString("OFF", x + PX(55), y + PY(22), 2);
+    else tft.drawString(String(vals[i]) + "C", x + PX(55), y + PY(22), 2);
   }
   
   tft.setTextColor(TEXT_GRAY, BG_COLOR);
-  tft.drawString("Tap anywhere else to cancel", 42 + 278/2, 230, 1);
+  tft.drawString("Tap anywhere else to cancel", PX(42) + (SCREEN_W-PX(42))/2, SCREEN_H - PY(10), 1);
   tft.setTextDatum(TL_DATUM);
 }
 
 void drawSpeedFanModal() {
-  tft.fillRect(42, 0, 278, 240, BG_COLOR); 
+  tft.fillRect(PX(42), 0, SCREEN_W - PX(42), SCREEN_H, BG_COLOR); 
   tft.setTextDatum(MC_DATUM);
   
   tft.setTextColor(TEXT_GRAY, BG_COLOR);
-  tft.drawString("Print Speed", 42 + 278/2, 25, 2);
+  tft.drawString("Print Speed", PX(42) + (SCREEN_W-PX(42))/2, PY(25), 2);
   
   int speeds[] = {50, 100, 150};
   for (int c = 0; c < 3; c++) {
-    int x = 50 + c * 75;
-    tft.fillRoundRect(x, 55, 65, 45, 6, CARD_COLOR);
-    tft.drawRoundRect(x, 55, 65, 45, 6, ACCENT_CYAN);
+    int x = PX(50) + c * PX(75);
+    tft.fillRoundRect(x, PY(55), PX(65), PY(45), 6, CARD_COLOR);
+    tft.drawRoundRect(x, PY(55), PX(65), PY(45), 6, ACCENT_CYAN);
     tft.setTextColor(TFT_WHITE, CARD_COLOR);
-    tft.drawString(String(speeds[c]) + "%", x + 32, 77, 2);
+    tft.drawString(String(speeds[c]) + "%", x + PX(32), PY(77), 2);
   }
 
   tft.setTextColor(TEXT_GRAY, BG_COLOR);
-  tft.drawString("Part Fan", 42 + 278/2, 115, 2);
+  tft.drawString("Part Fan", PX(42) + (SCREEN_W-PX(42))/2, PY(115), 2);
   
   int fans[] = {0, 50, 100};
   for (int c = 0; c < 3; c++) {
-    int x = 50 + c * 75;
-    tft.fillRoundRect(x, 125, 65, 45, 6, CARD_COLOR);
-    tft.drawRoundRect(x, 125, 65, 45, 6, ACCENT_CYAN);
+    int x = PX(50) + c * PX(75);
+    tft.fillRoundRect(x, PY(125), PX(65), PY(45), 6, CARD_COLOR);
+    tft.drawRoundRect(x, PY(125), PX(65), PY(45), 6, ACCENT_CYAN);
     tft.setTextColor(TFT_WHITE, CARD_COLOR);
-    tft.drawString(String(fans[c]) + "%", x + 32, 147, 2);
+    tft.drawString(String(fans[c]) + "%", x + PX(32), PY(147), 2);
   }
 
   tft.setTextColor(TEXT_GRAY, BG_COLOR);
-  tft.drawString("Tap anywhere else to cancel", 42 + 278/2, 230, 1);
+  tft.drawString("Tap anywhere else to cancel", PX(42) + (SCREEN_W-PX(42))/2, SCREEN_H - PY(10), 1);
   tft.setTextDatum(TL_DATUM);
 }
 
 void drawActiveToolModal() {
-  tft.fillRect(42, 0, 278, 240, BG_COLOR); 
+  tft.fillRect(PX(42), 0, SCREEN_W - PX(42), SCREEN_H, BG_COLOR); 
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(TFT_WHITE, BG_COLOR);
-  tft.drawString("Select Active Tool", 42 + 278/2, 20, 2);
+  tft.drawString("Select Active Tool", PX(42) + (SCREEN_W-PX(42))/2, PY(20), 2);
 
   for(int i = 0; i < 4; i++) {
     int r = i / 2;
     int c = i % 2;
-    int x = 60 + c * 130;
-    int y = 50 + r * 60;
+    int x = PX(60) + c * PX(130);
+    int y = PY(50) + r * PY(60);
     
-    tft.fillRoundRect(x, y, 110, 45, 6, CARD_COLOR);
-    tft.drawRoundRect(x, y, 110, 45, 6, ACCENT_CYAN);
+    tft.fillRoundRect(x, y, PX(110), PY(45), 6, CARD_COLOR);
+    tft.drawRoundRect(x, y, PX(110), PY(45), 6, ACCENT_CYAN);
     
     tft.setTextColor(TFT_WHITE, CARD_COLOR);
-    tft.drawString("Tool " + String(i + 1), x + 55, y + 22, 2);
+    tft.drawString("Tool " + String(i + 1), x + PX(55), y + PY(22), 2);
   }
   
-  tft.fillRoundRect(60, 180, 240, 40, 6, BTN_RED);
+  tft.fillRoundRect(PX(60), PY(180), PX(240), PY(40), 6, BTN_RED);
   tft.setTextColor(TFT_WHITE, BTN_RED);
-  tft.drawString("None", 42 + 278/2, 200, 2); 
+  tft.drawString("None", PX(42) + (SCREEN_W-PX(42))/2, PY(200), 2); 
   
   tft.setTextDatum(TL_DATUM);
 }
 
 void drawToolModal(int idx) {
-  tft.fillRect(42, 0, 278, 240, BG_COLOR);
+  tft.fillRect(PX(42), 0, SCREEN_W - PX(42), SCREEN_H, BG_COLOR);
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(TFT_WHITE, BG_COLOR);
-  tft.drawString("Tool " + String(idx + 1) + " Settings", 42 + 278/2, 20, 2);
+  tft.drawString("Tool " + String(idx + 1) + " Settings", PX(42) + (SCREEN_W-PX(42))/2, PY(20), 2);
 
   String tempLbl[] = {"OFF", "200C", "220C", "240C"};
   for(int i=0; i<4; i++) {
-    int x = 50 + (i * 65);
-    tft.fillRoundRect(x, 40, 55, 35, 4, CARD_COLOR);
-    tft.drawRoundRect(x, 40, 55, 35, 4, ACCENT_CYAN);
+    int x = PX(50) + (i * PX(65));
+    tft.fillRoundRect(x, PY(40), PX(55), PY(35), 4, CARD_COLOR);
+    tft.drawRoundRect(x, PY(40), PX(55), PY(35), 4, ACCENT_CYAN);
     tft.setTextColor(TFT_WHITE, CARD_COLOR);
-    tft.drawString(tempLbl[i], x + 27, 40 + 17, 1);
+    tft.drawString(tempLbl[i], x + PX(27), PY(40) + PY(17), 1);
   }
 
-  tft.fillRoundRect(50, 90, 120, 35, 4, CARD_COLOR);
-  tft.drawRoundRect(50, 90, 120, 35, 4, ACCENT_CYAN);
+  tft.fillRoundRect(PX(50), PY(90), PX(120), PY(35), 4, CARD_COLOR);
+  tft.drawRoundRect(PX(50), PY(90), PX(120), PY(35), 4, ACCENT_CYAN);
   tft.setTextColor(TFT_WHITE, CARD_COLOR);
-  tft.drawString("Type: " + filType[idx], 50 + 60, 90 + 17, 1);
+  tft.drawString("Type: " + filType[idx], PX(50) + PX(60), PY(90) + PY(17), 1);
 
-  tft.fillRoundRect(180, 90, 120, 35, 4, CARD_COLOR);
-  tft.drawRoundRect(180, 90, 120, 35, 4, ACCENT_CYAN);
-  tft.drawString("Color", 180 + 40, 90 + 17, 1);
-  tft.fillCircle(180 + 90, 90 + 17, 10, filColor[idx]);
+  tft.fillRoundRect(PX(180), PY(90), PX(120), PY(35), 4, CARD_COLOR);
+  tft.drawRoundRect(PX(180), PY(90), PX(120), PY(35), 4, ACCENT_CYAN);
+  tft.drawString("Color", PX(180) + PX(40), PY(90) + PY(17), 1);
+  tft.fillCircle(PX(180) + PX(90), PY(90) + PY(17), PX(10), filColor[idx]);
 
-  tft.fillRoundRect(50, 140, 120, 35, 4, toolAttached[idx] ? BTN_RED : BTN_GREEN);
+  tft.fillRoundRect(PX(50), PY(140), PX(120), PY(35), 4, toolAttached[idx] ? BTN_RED : BTN_GREEN);
   tft.setTextColor(TFT_WHITE, toolAttached[idx] ? BTN_RED : BTN_GREEN);
-  tft.drawString(toolAttached[idx] ? "Detach" : "Attach", 50 + 60, 140 + 17, 2);
+  tft.drawString(toolAttached[idx] ? "Detach" : "Attach", PX(50) + PX(60), PY(140) + PY(17), 2);
 
-  tft.fillRoundRect(180, 140, 120, 35, 4, toolLoaded[idx] ? BTN_RED : BTN_GREEN);
+  tft.fillRoundRect(PX(180), PY(140), PX(120), PY(35), 4, toolLoaded[idx] ? BTN_RED : BTN_GREEN);
   tft.setTextColor(TFT_WHITE, toolLoaded[idx] ? BTN_RED : BTN_GREEN);
-  tft.drawString(toolLoaded[idx] ? "Unload" : "Load", 180 + 60, 140 + 17, 2);
+  tft.drawString(toolLoaded[idx] ? "Unload" : "Load", PX(180) + PX(60), PY(140) + PY(17), 2);
 
-  tft.fillRoundRect(50, 185, 250, 35, 4, BTN_BLUE);
+  tft.fillRoundRect(PX(50), PY(185), PX(250), PY(35), 4, BTN_BLUE);
   tft.setTextColor(TFT_WHITE, BTN_BLUE);
-  tft.drawString("Close", 42 + 278/2, 185 + 17, 2);
+  tft.drawString("Close", PX(42) + (SCREEN_W-PX(42))/2, PY(185) + PY(17), 2);
 
   tft.setTextDatum(TL_DATUM);
 }
 
 void updateKeyboardInputBox() {
-  tft.fillRoundRect(50, 35, 260, 30, 4, CARD_COLOR);
-  tft.drawRoundRect(50, 35, 260, 30, 4, ACCENT_CYAN);
+  tft.fillRoundRect(PX(50), PY(35), PX(260), PY(30), 4, CARD_COLOR);
+  tft.drawRoundRect(PX(50), PY(35), PX(260), PY(30), 4, ACCENT_CYAN);
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(ACCENT_CYAN, CARD_COLOR);
-  tft.drawString(kbInput + "_", 42 + 278/2, 50, 2);
+  tft.drawString(kbInput + "_", PX(42) + (SCREEN_W-PX(42))/2, PY(50), 2);
 }
 
 void drawKeyboardModal(int idx) {
-  tft.fillRect(42, 0, 278, 240, BG_COLOR);
+  tft.fillRect(PX(42), 0, SCREEN_W - PX(42), SCREEN_H, BG_COLOR);
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(TFT_WHITE, BG_COLOR);
   
   if (kbMode == 0) {
-      tft.drawString("Type Filament for Tool " + String(idx + 1), 42 + 278/2, 15, 2);
+      tft.drawString("Type Filament for Tool " + String(idx + 1), PX(42) + (SCREEN_W-PX(42))/2, PY(15), 2);
   } else if (kbMode == 1) {
-      tft.drawString("Enter HEX Color (RRGGBB)", 42 + 278/2, 15, 2);
+      tft.drawString("Enter HEX Color (RRGGBB)", PX(42) + (SCREEN_W-PX(42))/2, PY(15), 2);
   } else if (kbMode == 2) {
-      tft.drawString("Enter Printer IP Address", 42 + 278/2, 15, 2);
+      tft.drawString("Enter Printer IP Address", PX(42) + (SCREEN_W-PX(42))/2, PY(15), 2);
   } else if (kbMode == 3) {
-      tft.drawString("Enter Printer Name", 42 + 278/2, 15, 2);
+      tft.drawString("Enter Printer Name", PX(42) + (SCREEN_W-PX(42))/2, PY(15), 2);
   }
 
   updateKeyboardInputBox();
@@ -1558,187 +1638,187 @@ void drawKeyboardModal(int idx) {
       for (int i=0; i<12; i++) {
           int r = i / 3;
           int c = i % 3;
-          int bx = 70 + c * 60;
-          int by = 75 + r * 32;
-          tft.fillRoundRect(bx, by, 50, 28, 4, tft.color565(50, 55, 65));
-          tft.drawString(numpad[i], bx + 25, by + 14, 2);
+          int bx = PX(70) + c * PX(60);
+          int by = PY(75) + r * PY(32);
+          tft.fillRoundRect(bx, by, PX(50), PY(28), 4, tft.color565(50, 55, 65));
+          tft.drawString(numpad[i], bx + PX(25), by + PY(14), 2);
       }
   } else { 
       for (int r=0; r<4; r++) {
         for (int c=0; c<10; c++) {
           char key = kbRows[r][c];
-          int bx = 45 + (c * 27);
-          int by = 75 + (r * 30);
-          tft.fillRoundRect(bx, by, 25, 28, 4, tft.color565(50, 55, 65));
+          int bx = PX(45) + (c * PX(27));
+          int by = PY(75) + (r * PY(30));
+          tft.fillRoundRect(bx, by, PX(25), PY(28), 4, tft.color565(50, 55, 65));
           
           if (key == '<') {
-              tft.drawString("DEL", bx + 12, by + 14, 1);
+              tft.drawString("DEL", bx + PX(12), by + PY(14), 1);
           } else {
               char lbl[2] = {key, '\0'};
-              tft.drawString(lbl, bx + 12, by + 14, 2);
+              tft.drawString(lbl, bx + PX(12), by + PY(14), 2);
           }
         }
       }
   }
 
   if (kbMode == 2) {
-      tft.fillRoundRect(48, 205, 100, 30, 4, BTN_RED);
-      tft.drawString("CANCEL", 48+50, 205+15, 2);
-      tft.fillRoundRect(172, 205, 100, 30, 4, BTN_BLUE);
-      tft.drawString("SAVE", 172+50, 205+15, 2);
+      tft.fillRoundRect(PX(48), PY(205), PX(100), PY(30), 4, BTN_RED);
+      tft.drawString("CANCEL", PX(48)+PX(50), PY(205)+PY(15), 2);
+      tft.fillRoundRect(PX(172), PY(205), PX(100), PY(30), 4, BTN_BLUE);
+      tft.drawString("SAVE", PX(172)+PX(50), PY(205)+PY(15), 2);
   } else {
-      tft.fillRoundRect(48, 200, 70, 30, 4, BTN_RED);
-      tft.drawString("CANCEL", 48+35, 200+15, 1);
+      tft.fillRoundRect(PX(48), PY(200), PX(70), PY(30), 4, BTN_RED);
+      tft.drawString("CANCEL", PX(48)+PX(35), PY(200)+PY(15), 1);
 
       if (kbMode == 0 || kbMode == 3) {
-        tft.fillRoundRect(128, 200, 100, 30, 4, tft.color565(50, 55, 65));
-        tft.drawString("SPACE", 128+50, 200+15, 1);
+        tft.fillRoundRect(PX(128), PY(200), PX(100), PY(30), 4, tft.color565(50, 55, 65));
+        tft.drawString("SPACE", PX(128)+PX(50), PY(200)+PY(15), 1);
       }
 
-      tft.fillRoundRect(238, 200, 70, 30, 4, BTN_BLUE);
-      tft.drawString("SAVE", 238+35, 200+15, 2);
+      tft.fillRoundRect(PX(238), PY(200), PX(70), PY(30), 4, BTN_BLUE);
+      tft.drawString("SAVE", PX(238)+PX(35), PY(200)+PY(15), 2);
   }
   
   tft.setTextDatum(TL_DATUM);
 }
 
 void drawColorPickerModal(int idx) {
-  tft.fillRect(42, 0, 278, 240, BG_COLOR);
+  tft.fillRect(PX(42), 0, SCREEN_W - PX(42), SCREEN_H, BG_COLOR);
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(TFT_WHITE, BG_COLOR);
-  tft.drawString("Select Color for Tool " + String(idx + 1), 42 + 278/2, 15, 2);
+  tft.drawString("Select Color for Tool " + String(idx + 1), PX(42) + (SCREEN_W-PX(42))/2, PY(15), 2);
 
   for (int i=0; i<10; i++) {
     int r = i / 5;
     int c = i % 5;
-    int bx = 50 + (c * 50);
-    int by = 45 + (r * 55);
+    int bx = PX(50) + (c * PX(50));
+    int by = PY(45) + (r * PY(55));
     
-    tft.fillRoundRect(bx, by, 40, 45, 6, FIL_COLORS[i]);
+    tft.fillRoundRect(bx, by, PX(40), PY(45), 6, FIL_COLORS[i]);
     if (filColor[idx] == FIL_COLORS[i]) {
-        tft.drawRoundRect(bx-2, by-2, 44, 49, 6, ACCENT_CYAN);
-        tft.drawRoundRect(bx-1, by-1, 42, 47, 6, ACCENT_CYAN);
+        tft.drawRoundRect(bx-PX(2), by-PY(2), PX(44), PY(49), 6, ACCENT_CYAN);
+        tft.drawRoundRect(bx-PX(1), by-PY(1), PX(42), PY(47), 6, ACCENT_CYAN);
     }
   }
 
-  tft.fillRoundRect(50, 160, 260, 32, 4, tft.color565(40, 60, 90));
+  tft.fillRoundRect(PX(50), PY(160), PX(260), PY(32), 4, tft.color565(40, 60, 90));
   tft.setTextColor(ACCENT_CYAN);
-  tft.drawString("Custom HEX...", 42 + 278/2, 160 + 16, 2);
+  tft.drawString("Custom HEX...", PX(42) + (SCREEN_W-PX(42))/2, PY(160) + PY(16), 2);
 
-  tft.fillRoundRect(50, 200, 260, 32, 4, tft.color565(50, 55, 65));
+  tft.fillRoundRect(PX(50), PY(200), PX(260), PY(32), 4, tft.color565(50, 55, 65));
   tft.setTextColor(TFT_WHITE);
-  tft.drawString("Cancel", 42 + 278/2, 200 + 16, 2);
+  tft.drawString("Cancel", PX(42) + (SCREEN_W-PX(42))/2, PY(200) + PY(16), 2);
   
   tft.setTextDatum(TL_DATUM);
 }
 
 void drawPrintOptionsModal() {
-  tft.fillRect(42, 0, 278, 240, BG_COLOR);
+  tft.fillRect(PX(42), 0, SCREEN_W - PX(42), SCREEN_H, BG_COLOR);
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(TFT_WHITE, BG_COLOR);
   String headerStr = "Launch: " + selectedFile;
   if(headerStr.length() > 28) headerStr = headerStr.substring(0, 25) + "...";
-  tft.drawString(headerStr, 42 + 278/2, 20, 2);
+  tft.drawString(headerStr, PX(42) + (SCREEN_W-PX(42))/2, PY(20), 2);
 
   tft.setTextDatum(TL_DATUM);
 
-  tft.drawRect(50, 45, 20, 20, TEXT_GRAY);
-  if(optBedLevel) tft.fillRect(53, 48, 14, 14, ACCENT_CYAN);
-  tft.drawString("Auto Bed Leveling", 80, 48, 2);
+  tft.drawRect(PX(50), PY(45), PX(20), PY(20), TEXT_GRAY);
+  if(optBedLevel) tft.fillRect(PX(53), PY(48), PX(14), PY(14), ACCENT_CYAN);
+  tft.drawString("Auto Bed Leveling", PX(80), PY(48), 2);
 
-  tft.drawRect(50, 75, 20, 20, TEXT_GRAY);
-  if(optTimelapse) tft.fillRect(53, 78, 14, 14, ACCENT_CYAN);
-  tft.drawString("Record Timelapse", 80, 78, 2);
+  tft.drawRect(PX(50), PY(75), PX(20), PY(20), TEXT_GRAY);
+  if(optTimelapse) tft.fillRect(PX(53), PY(78), PX(14), PY(14), ACCENT_CYAN);
+  tft.drawString("Record Timelapse", PX(80), PY(78), 2);
 
-  tft.drawRect(50, 105, 20, 20, TEXT_GRAY);
-  if(optAdvMap) tft.fillRect(53, 108, 14, 14, ACCENT_CYAN);
-  tft.drawString("Adv Tool Mapping", 80, 108, 2);
+  tft.drawRect(PX(50), PY(105), PX(20), PY(20), TEXT_GRAY);
+  if(optAdvMap) tft.fillRect(PX(53), PY(108), PX(14), PY(14), ACCENT_CYAN);
+  tft.drawString("Adv Tool Mapping", PX(80), PY(108), 2);
 
-  tft.drawString("Map Main Extruder (T0) To:", 50, 135, 1);
+  tft.drawString("Map Main Extruder (T0) To:", PX(50), PY(135), 1);
   for(int i=0; i<4; i++) {
-     int bx = 50 + (i*55);
-     tft.fillRoundRect(bx, 145, 50, 45, 4, optT0 == i ? ACCENT_CYAN : tft.color565(50,55,65));
+     int bx = PX(50) + (i*PX(55));
+     tft.fillRoundRect(bx, PY(145), PX(50), PY(45), 4, optT0 == i ? ACCENT_CYAN : tft.color565(50,55,65));
      tft.setTextColor(optT0 == i ? BG_COLOR : TFT_WHITE);
      tft.setTextDatum(MC_DATUM);
-     tft.drawString("T"+String(i+1), bx+25, 155, 2);
+     tft.drawString("T"+String(i+1), bx+PX(25), PY(155), 2);
      
      String fType = filType[i];
      if(fType.length() > 6) fType = fType.substring(0, 6);
-     tft.drawString(fType, bx+25, 170, 1);
-     tft.fillCircle(bx+25, 180, 4, filColor[i]);
+     tft.drawString(fType, bx+PX(25), PY(170), 1);
+     tft.fillCircle(bx+PX(25), PY(180), PX(4), filColor[i]);
   }
 
   tft.setTextDatum(TL_DATUM);
   tft.setTextColor(TFT_WHITE);
-  tft.fillRoundRect(50, 195, 90, 35, 4, BTN_RED);
+  tft.fillRoundRect(PX(50), PY(195), PX(90), PY(35), 4, BTN_RED);
   tft.setTextDatum(MC_DATUM);
-  tft.drawString("CANCEL", 95, 212, 1);
+  tft.drawString("CANCEL", PX(95), PY(212), 1);
 
-  tft.fillRoundRect(150, 195, 150, 35, 4, BTN_GREEN);
-  tft.drawString("LAUNCH PRINT", 225, 212, 2);
+  tft.fillRoundRect(PX(150), PY(195), PX(150), PY(35), 4, BTN_GREEN);
+  tft.drawString("LAUNCH PRINT", PX(225), PY(212), 2);
 
   tft.setTextDatum(TL_DATUM);
 }
 
 void drawToolheadTab() {
-  tft.fillRect(42, 0, 278, 240, BG_COLOR);
+  tft.fillRect(PX(42), 0, SCREEN_W - PX(42), SCREEN_H, BG_COLOR);
   tft.setTextSize(1);
   tft.setTextDatum(TL_DATUM);
   
   for (int i = 0; i < 4; i++) {
-    int bx = 45 + (i * 69); 
-    tft.fillRoundRect(bx, 40, 64, 160, 6, CARD_COLOR);
+    int bx = PX(45) + (i * PX(69)); 
+    tft.fillRoundRect(bx, PY(40), PX(64), PY(160), 6, CARD_COLOR);
   }
   updateDynamicUI();
 }
 
 void drawMoveTab() {
-  tft.fillRect(42, 0, 278, 240, BG_COLOR);
+  tft.fillRect(PX(42), 0, SCREEN_W - PX(42), SCREEN_H, BG_COLOR);
   tft.setTextSize(1); tft.setTextColor(TFT_WHITE, BG_COLOR);
-  tft.setCursor(55, 5); tft.print("Move & Home");
+  tft.setCursor(PX(55), PY(5)); tft.print("Move & Home");
 
   String distLabels[] = {"0.1", "1", "10", "50"};
   for (int i=0; i<4; i++) {
-    int x = 55 + (i * 60);
+    int x = PX(55) + (i * PX(60));
     bool active = false;
     if (i == 0 && moveDist == 0.1) active = true;
     if (i == 1 && moveDist == 1.0) active = true;
     if (i == 2 && moveDist == 10.0) active = true;
     if (i == 3 && moveDist == 50.0) active = true;
 
-    tft.fillRoundRect(x, 25, 50, 30, 4, active ? ACCENT_CYAN : CARD_COLOR);
+    tft.fillRoundRect(x, PY(25), PX(50), PY(30), 4, active ? ACCENT_CYAN : CARD_COLOR);
     tft.setTextColor(active ? BG_COLOR : TFT_WHITE, active ? ACCENT_CYAN : CARD_COLOR);
     tft.setTextDatum(MC_DATUM);
-    tft.drawString(distLabels[i], x + 25, 40, 2);
+    tft.drawString(distLabels[i], x + PX(25), PY(40), 2);
   }
 
   tft.setTextColor(TFT_WHITE, CARD_COLOR);
-  tft.fillRoundRect(120, 130, 40, 40, 6, CARD_COLOR); tft.drawString("H", 140, 150, 2);
-  tft.fillRoundRect(120, 80, 40, 40, 6, CARD_COLOR); tft.drawString("Y+", 140, 100, 2);
-  tft.fillRoundRect(120, 180, 40, 40, 6, CARD_COLOR); tft.drawString("Y-", 140, 200, 2);
-  tft.fillRoundRect(70, 130, 40, 40, 6, CARD_COLOR); tft.drawString("X-", 90, 150, 2);
-  tft.fillRoundRect(170, 130, 40, 40, 6, CARD_COLOR); tft.drawString("X+", 190, 150, 2);
+  tft.fillRoundRect(PX(120), PY(130), PX(40), PY(40), 6, CARD_COLOR); tft.drawString("H",  PX(140), PY(150), 2);
+  tft.fillRoundRect(PX(120), PY(80),  PX(40), PY(40), 6, CARD_COLOR); tft.drawString("Y+", PX(140), PY(100), 2);
+  tft.fillRoundRect(PX(120), PY(180), PX(40), PY(40), 6, CARD_COLOR); tft.drawString("Y-", PX(140), PY(200), 2);
+  tft.fillRoundRect(PX(70),  PY(130), PX(40), PY(40), 6, CARD_COLOR); tft.drawString("X-", PX(90),  PY(150), 2);
+  tft.fillRoundRect(PX(170), PY(130), PX(40), PY(40), 6, CARD_COLOR); tft.drawString("X+", PX(190), PY(150), 2);
   
-  tft.fillRoundRect(235, 80, 50, 40, 6, CARD_COLOR); tft.drawString("Z+", 260, 100, 2);
-  tft.fillRoundRect(235, 130, 50, 40, 6, CARD_COLOR); tft.drawString("HZ", 260, 150, 2); // Home Z
-  tft.fillRoundRect(235, 180, 50, 40, 6, CARD_COLOR); tft.drawString("Z-", 260, 200, 2);
+  tft.fillRoundRect(PX(235), PY(80),  PX(50), PY(40), 6, CARD_COLOR); tft.drawString("Z+", PX(260), PY(100), 2);
+  tft.fillRoundRect(PX(235), PY(130), PX(50), PY(40), 6, CARD_COLOR); tft.drawString("HZ", PX(260), PY(150), 2); 
+  tft.fillRoundRect(PX(235), PY(180), PX(50), PY(40), 6, CARD_COLOR); tft.drawString("Z-", PX(260), PY(200), 2);
   tft.setTextDatum(TL_DATUM);
 }
 
 void drawPrintTab() {
-  tft.fillRect(42, 0, 278, 240, BG_COLOR);
+  tft.fillRect(PX(42), 0, SCREEN_W - PX(42), SCREEN_H, BG_COLOR);
   tft.setTextDatum(TL_DATUM); 
   tft.setTextSize(1);
   tft.setTextColor(TFT_WHITE, BG_COLOR);
 
-  tft.fillRoundRect(50, 5, 105, 26, 4, printTabSource == 0 ? ACCENT_CYAN : CARD_COLOR);
+  tft.fillRoundRect(PX(50), PY(5), PX(105), PY(26), 4, printTabSource == 0 ? ACCENT_CYAN : CARD_COLOR);
   tft.setTextColor(printTabSource == 0 ? BG_COLOR : TFT_WHITE);
   tft.setTextDatum(MC_DATUM);
-  tft.drawString("Printer Files", 102, 18, 1);
+  tft.drawString("Printer Files", PX(102), PY(18), 1);
 
-  tft.fillRoundRect(165, 5, 95, 26, 4, printTabSource == 1 ? ACCENT_CYAN : CARD_COLOR);
+  tft.fillRoundRect(PX(165), PY(5), PX(95), PY(26), 4, printTabSource == 1 ? ACCENT_CYAN : CARD_COLOR);
   tft.setTextColor(printTabSource == 1 ? BG_COLOR : TFT_WHITE);
-  tft.drawString("Screen SD", 212, 18, 1);
+  tft.drawString("Screen SD", PX(212), PY(18), 1);
   
   tft.setTextDatum(TL_DATUM);
 
@@ -1747,73 +1827,71 @@ void drawPrintTab() {
 
   if (count == 0) {
     tft.setTextColor(TEXT_GRAY);
-    tft.drawString("No files found.", 55, 50, 1);
+    tft.drawString("No files found.", PX(55), PY(50), 1);
     return;
   }
 
   for (int i=0; i<4; i++) {
      int idx = fileScrollIndex + i;
      if (idx >= count) break;
-     int by = 45 + (i * 45);
-     tft.fillRoundRect(50, by, 200, 40, 4, CARD_COLOR);
+     int by = PY(45) + (i * PY(45));
+     tft.fillRoundRect(PX(50), by, PX(200), PY(40), 4, CARD_COLOR);
      tft.setTextColor(TFT_WHITE, CARD_COLOR);
      String fn = list[idx];
      if(fn.length() > 28) fn = fn.substring(0, 25) + "...";
-     tft.drawString(fn, 55, by + 12, 1);
+     tft.drawString(fn, PX(55), by + PY(12), 1);
   }
 
-  tft.fillRoundRect(260, 45, 45, 85, 4, tft.color565(50, 55, 65));
+  tft.fillRoundRect(PX(260), PY(45), PX(45), PY(85), 4, tft.color565(50, 55, 65));
   tft.setTextColor(TFT_WHITE);
   tft.setTextDatum(MC_DATUM);
-  tft.drawString("UP", 282, 87, 2);
+  tft.drawString("UP", PX(282), PY(87), 2);
   
-  tft.fillRoundRect(260, 135, 45, 85, 4, tft.color565(50, 55, 65));
-  tft.drawString("DN", 282, 177, 2);
+  tft.fillRoundRect(PX(260), PY(135), PX(45), PY(85), 4, tft.color565(50, 55, 65));
+  tft.drawString("DN", PX(282), PY(177), 2);
   tft.setTextDatum(TL_DATUM);
 }
 
 void drawSettingsTab() {
-  tft.fillRect(42, 0, 278, 240, BG_COLOR);
+  tft.fillRect(PX(42), 0, SCREEN_W - PX(42), SCREEN_H, BG_COLOR);
   tft.setTextSize(1);
   tft.setTextColor(TFT_WHITE, BG_COLOR);
-  tft.drawString("SYS_CONFIG", 55, 6, 2);
+  tft.drawString("SYS_CONFIG", PX(55), PY(6), 2);
 
   tft.setTextColor(TEXT_GRAY, BG_COLOR);
-  tft.setCursor(55, 28);  tft.print("Printer IP: " + String(printerIP));
-  tft.setCursor(55, 44);  tft.print("WiFi: " + WiFi.SSID() + " (" + String(WiFi.RSSI()) + "dBm)");
-  tft.setCursor(55, 60);  tft.print("Display IP: " + WiFi.localIP().toString());
-  tft.setCursor(55, 76);  tft.print("URL: http://" + String(mdnsName) + ".local");
-  tft.setCursor(55, 92);  tft.print("MAC: " + WiFi.macAddress());
+  tft.setCursor(PX(55), PY(28));  tft.print("Printer IP: " + String(printerIP));
+  tft.setCursor(PX(55), PY(44));  tft.print("WiFi: " + WiFi.SSID() + " (" + String(WiFi.RSSI()) + "dBm)");
+  tft.setCursor(PX(55), PY(60));  tft.print("Display IP: " + WiFi.localIP().toString());
+  tft.setCursor(PX(55), PY(76));  tft.print("URL: http://" + String(mdnsName) + ".local");
+  tft.setCursor(PX(55), PY(92));  tft.print("MAC: " + WiFi.macAddress());
 
   if (sdCardReady) {
     tft.setTextColor(TFT_GREEN, BG_COLOR);
-    tft.setCursor(55, 108); tft.print("SD Card: " + String((unsigned long)sdCardTotal) + " MB Total");
+    tft.setCursor(PX(55), PY(108)); tft.print("SD Card: " + String((unsigned long)sdCardTotal) + " MB Total");
   } else {
     tft.setTextColor(TFT_RED, BG_COLOR);
-    tft.setCursor(55, 108); tft.print("SD Card: Not Mounted");
+    tft.setCursor(PX(55), PY(108)); tft.print("SD Card: Not Mounted");
   }
 
-  // Edit IP Button
-  tft.fillRoundRect(48, 125, 130, 40, 6, CARD_COLOR);
+  tft.fillRoundRect(PX(48), PY(125), PX(130), PY(40), 6, CARD_COLOR);
   tft.setTextColor(TFT_WHITE, CARD_COLOR); 
   tft.setTextDatum(MC_DATUM);
-  tft.drawString("Edit IP", 113, 145, 2);
+  tft.drawString("Edit IP", PX(113), PY(145), 2);
 
-  // Edit Name Button
-  tft.fillRoundRect(184, 125, 130, 40, 6, CARD_COLOR);
-  tft.drawString("Edit Name", 249, 145, 2);
+  tft.fillRoundRect(PX(184), PY(125), PX(130), PY(40), 6, CARD_COLOR);
+  tft.drawString("Edit Name", PX(249), PY(145), 2);
 
-  tft.fillRoundRect(48, 175, 130, 40, 6, BTN_BLUE); 
+  tft.fillRoundRect(PX(48), PY(175), PX(130), PY(40), 6, BTN_BLUE); 
   tft.setTextColor(TFT_WHITE, BTN_BLUE); 
-  tft.drawString("Calibrate", 113, 195, 2);
+  tft.drawString("Calibrate", PX(113), PY(195), 2);
 
-  tft.fillRoundRect(184, 175, 130, 40, 6, CARD_COLOR); 
+  tft.fillRoundRect(PX(184), PY(175), PX(130), PY(40), 6, CARD_COLOR); 
   tft.setTextColor(ACCENT_CYAN, CARD_COLOR);
-  tft.drawString("Reset WiFi", 249, 195, 2);
+  tft.drawString("Reset WiFi", PX(249), PY(195), 2);
   
   tft.setTextDatum(TL_DATUM);
   tft.setTextColor(ACCENT_CYAN, BG_COLOR);
-  tft.drawString("v2.0 Firmware by Nates Print Shop", 48, 225, 1);
+  tft.drawString(String(FW_VERSION) + " Firmware by Nates Print Shop", PX(48), PY(225), 1);
 }
 
 void updateDynamicUI() {
@@ -1823,44 +1901,42 @@ void updateDynamicUI() {
   tft.setTextPadding(0);
 
   if (currentTab == 0) {
-    tft.fillRect(48, 2, 266, 18, BG_COLOR);
+    tft.fillRect(PX(48), PY(2), PX(266), PY(18), BG_COLOR);
     tft.setTextDatum(TL_DATUM);
     tft.setTextColor(TFT_WHITE, BG_COLOR);
     String headerStr = String(printerName) + " : " + currentState;
     if (headerStr.length() > 25) headerStr = headerStr.substring(0, 23) + "..";
-    tft.drawString(headerStr, 48, 3, 2);
+    tft.drawString(headerStr, PX(48), PY(3), 2);
 
     tft.setTextDatum(MC_DATUM);
 
-    tft.fillRect(50, 44, 126, 30, CARD_COLOR);
+    tft.fillRect(PX(50), PY(44), PX(126), PY(30), CARD_COLOR);
     tft.setTextColor(TFT_WHITE, CARD_COLOR);
-    tft.drawString(String(bedTemp, 1) + "C", 113, 59, 2);
+    tft.drawString(String(bedTemp, 1) + "C", PX(113), PY(59), 2);
     
-    // Active Tool Block
-    tft.fillRect(186, 44, 126, 30, CARD_COLOR);
+    tft.fillRect(PX(186), PY(44), PX(126), PY(30), CARD_COLOR);
     tft.setTextColor(ACCENT_CYAN, CARD_COLOR);
     if (activeTool >= 0 && activeTool <= 3) {
-        tft.drawString("Tool " + String(activeTool + 1), 249, 59, 2);
+        tft.drawString("Tool " + String(activeTool + 1), PX(249), PY(59), 2);
     } else {
         tft.setTextColor(TEXT_GRAY, CARD_COLOR);
-        tft.drawString("None", 249, 59, 2);
+        tft.drawString("None", PX(249), PY(59), 2);
     }
     
-    // Tool Temp Block
-    tft.fillRect(50, 104, 126, 30, CARD_COLOR);
+    tft.fillRect(PX(50), PY(104), PX(126), PY(30), CARD_COLOR);
     if (activeTool >= 0 && activeTool <= 3) {
         tft.setTextColor(toolTarget[activeTool] > 0 ? tft.color565(255, 120, 120) : TFT_WHITE, CARD_COLOR);
-        tft.drawString(String(toolTemp[activeTool], 1) + "C", 113, 119, 2);
+        tft.drawString(String(toolTemp[activeTool], 1) + "C", PX(113), PY(119), 2);
     } else {
         tft.setTextColor(TEXT_GRAY, CARD_COLOR);
-        tft.drawString("-- C", 113, 119, 2);
+        tft.drawString("-- C", PX(113), PY(119), 2);
     }
     
-    tft.fillRect(186, 104, 126, 30, CARD_COLOR);
+    tft.fillRect(PX(186), PY(104), PX(126), PY(30), CARD_COLOR);
     tft.setTextColor(TFT_WHITE, CARD_COLOR);
-    tft.drawString(String(printSpeed) + "% / " + String(fanSpeed) + "%", 249, 119, 2);
+    tft.drawString(String(printSpeed) + "% / " + String(fanSpeed) + "%", PX(249), PY(119), 2);
 
-    tft.fillRect(48, 142, 266, 26, BG_COLOR);
+    tft.fillRect(PX(48), PY(142), PX(266), PY(26), BG_COLOR);
 
     tft.setTextDatum(TL_DATUM);
     tft.setTextColor(TEXT_GRAY, BG_COLOR);
@@ -1868,45 +1944,45 @@ void updateDynamicUI() {
     int lastSlash = shortFile.lastIndexOf('/');
     if (lastSlash >= 0) shortFile = shortFile.substring(lastSlash + 1);
     if (shortFile.length() > 20) shortFile = shortFile.substring(0, 17) + "...";
-    tft.drawString(shortFile, 48, 142, 1);
+    tft.drawString(shortFile, PX(48), PY(142), 1);
     
     tft.setTextDatum(TR_DATUM);
-    tft.drawString(String(printProgress, 1) + "%", 314, 142, 1);
+    tft.drawString(String(printProgress, 1) + "%", PX(314), PY(142), 1);
 
-    int barWidth = 266;
+    int barWidth = PX(266);
     int fillWidth = (int)((printProgress / 100.0) * barWidth);
     fillWidth = constrain(fillWidth, 0, barWidth);
     
-    tft.drawRect(48, 156, barWidth, 10, tft.color565(50, 55, 65)); 
-    if(fillWidth > 0) tft.fillRect(49, 157, fillWidth, 8, ACCENT_CYAN); 
+    tft.drawRect(PX(48), PY(156), barWidth, PY(10), tft.color565(50, 55, 65)); 
+    if(fillWidth > 0) tft.fillRect(PX(49), PY(157), fillWidth, PY(8), ACCENT_CYAN); 
 
     tft.setTextDatum(TL_DATUM); 
   } 
   else if (currentTab == 1) {
-    tft.fillRect(48, 2, 266, 18, BG_COLOR);
+    tft.fillRect(PX(48), PY(2), PX(266), PY(18), BG_COLOR);
     tft.setTextDatum(TL_DATUM);
     tft.setTextColor(TFT_WHITE, BG_COLOR);
-    tft.drawString(String(printerName) + " : " + currentState, 48, 3, 2);
+    tft.drawString(String(printerName) + " : " + currentState, PX(48), PY(3), 2);
 
     tft.setTextDatum(MC_DATUM);
 
     for (int i = 0; i < 4; i++) {
-      int bx = 45 + (i * 69);
+      int bx = PX(45) + (i * PX(69));
       
-      tft.drawRoundRect(bx, 40, 64, 160, 6, (activeTool == i) ? ACCENT_CYAN : tft.color565(50, 55, 65));
+      tft.drawRoundRect(bx, PY(40), PX(64), PY(160), 6, (activeTool == i) ? ACCENT_CYAN : tft.color565(50, 55, 65));
       
       tft.setTextColor(TEXT_GRAY, CARD_COLOR);
-      tft.drawString(String(i + 1), bx + 32, 40 + 15, 1);
+      tft.drawString(String(i + 1), bx + PX(32), PY(40) + PY(15), 1);
 
-      tft.fillCircle(bx + 32, 40 + 60, 15, filColor[i]);
+      tft.fillCircle(bx + PX(32), PY(40) + PY(60), PX(15), filColor[i]);
 
-      tft.fillRect(bx + 2, 40 + 90, 60, 20, CARD_COLOR);
+      tft.fillRect(bx + PX(2), PY(40) + PY(90), PX(60), PY(20), CARD_COLOR);
       tft.setTextColor(TFT_WHITE, CARD_COLOR);
-      tft.drawString(filType[i], bx + 32, 40 + 100, 1);
+      tft.drawString(filType[i], bx + PX(32), PY(40) + PY(100), 1);
 
-      tft.fillRect(bx + 2, 40 + 125, 60, 25, CARD_COLOR);
+      tft.fillRect(bx + PX(2), PY(40) + PY(125), PX(60), PY(25), CARD_COLOR);
       tft.setTextColor(toolTarget[i] > 0 ? tft.color565(255, 120, 120) : TEXT_GRAY, CARD_COLOR);
-      tft.drawString(String(toolTemp[i], 1) + "C", bx + 32, 40 + 135, 1);
+      tft.drawString(String(toolTemp[i], 1) + "C", bx + PX(32), PY(40) + PY(135), 1);
     }
     tft.setTextDatum(TL_DATUM);
   }
@@ -1914,7 +1990,6 @@ void updateDynamicUI() {
 
 void fetchPrinterData() {
   HTTPClient http;
-  // Removed print_task_config from the URL string
   String url = "http://" + String(printerIP) + ":7125/printer/objects/query?print_stats&toolhead&extruder&extruder1&extruder2&extruder3&heater_bed&fan&gcode_move&display_status";
   
   http.begin(url);
@@ -1943,8 +2018,6 @@ void fetchPrinterData() {
       toolTarget[2] = status["extruder2"]["target"].as<float>();
       toolTemp[3] = status["extruder3"]["temperature"].as<float>();
       toolTarget[3] = status["extruder3"]["target"].as<float>();
-
-      // ACTIVE SYNC FROM KLIPPER REMOVED: The ESP32 is now the Master Source of Truth for filaments
 
       printSpeed = status["gcode_move"]["speed_factor"].as<float>() * 100.0;
       fanSpeed = status["fan"]["speed"].as<float>() * 100.0;
@@ -2117,7 +2190,7 @@ void handleTech() {
   html += "<div style='display:flex; justify-content:space-between; margin-bottom:5px;'><label style='color:#888;'>Text</label><input type='color' name='c_text' value='" + customText + "' style='width:50%; height:30px;'></div>";
   html += "<div style='display:flex; justify-content:space-between; margin-bottom:5px;'><label style='color:#888;'>Accent</label><input type='color' name='c_acc' value='" + customAccent + "' style='width:50%; height:30px;'></div>";
   html += "</div>";
-  html += "<script>toggleCustom();</script>"; // Ensures correct display state on load
+  html += "<script>toggleCustom();</script>";
   
   html += "<hr style='border:1px solid #333; margin:15px 0;'>";
   html += "<label style='color:#888; font-weight:bold; font-size:12px;'>NEW WI-FI SSID (Leave blank to keep current)</label><br>";
@@ -2126,7 +2199,8 @@ void handleTech() {
   html += "<input type='text' name='wifi_pass' placeholder='••••••••'>";
   html += "<input type='submit' value='Save & Reboot' class='btn' style='margin-top:10px;'></form>";
   html += "<a href='/calibrate' class='btn' style='background:#2A3B5C; color:#00E5FF; margin-top:15px;'>Recalibrate Touchscreen</a></div>";
-
+  
+  html += "<div class='footer'>" + String(FW_VERSION) + " Firmware by Nates Print Shop</div>";
   html += "</div></body></html>";
   server.send(200, "text/html", html);
 }
@@ -2185,7 +2259,6 @@ void handleSave() {
     tft.invertDisplay(invertDisplay);
   }
 
-  // --- SAVE THEME PREFERENCES ---
   if (server.hasArg("theme")) {
     currentTheme = server.arg("theme").toInt();
     preferences.putInt("theme", currentTheme);
