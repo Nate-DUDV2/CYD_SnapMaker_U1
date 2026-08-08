@@ -1,114 +1,44 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CYD Snapmaker Screen Installer</title>
-    <style>
-        body {
-            background-color: #0f1115;
-            color: #ffffff;
-            font-family: 'Courier New', Courier, monospace;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-            margin: 0;
-            padding: 20px;
-            box-sizing: border-box;
-            text-align: center;
-        }
-        .container {
-            background-color: #161B22;
-            padding: 40px;
-            border-radius: 12px;
-            border: 2px solid #00E5FF;
-            box-shadow: 0 0 20px rgba(0, 229, 255, 0.2);
-            max-width: 500px;
-            width: 100%;
-        }
-        h1 {
-            color: #00E5FF;
-            text-transform: uppercase;
-            letter-spacing: 2px;
-            margin-top: 0;
-            font-size: 24px;
-        }
-        p {
-            color: #888888;
-            line-height: 1.5;
-            margin-bottom: 25px;
-            font-family: sans-serif;
-            font-size: 14px;
-        }
-        .select-label {
-            display: block;
-            text-align: left;
-            color: #00E5FF;
-            font-family: sans-serif;
-            font-weight: bold;
-            font-size: 13px;
-            margin-bottom: 6px;
-            text-transform: uppercase;
-        }
-        select {
-            width: 100%;
-            padding: 12px;
-            margin-bottom: 20px;
-            background-color: #0f1115;
-            border: 1px solid #333;
-            color: #ffffff;
-            border-radius: 6px;
-            font-size: 14px;
-            outline: none;
-            cursor: pointer;
-            box-sizing: border-box;
-        }
-        select:focus {
-            border-color: #00E5FF;
-        }
-        esp-web-install-button {
-            display: block;
-            margin: 20px auto;
-        }
-        .footer {
-            margin-top: 25px;
-            font-size: 12px;
-            color: #555;
-        }
-    </style>
-    <!-- Official ESP Web Tools script -->
-    <script type="module" src="https://unpkg.com/esp-web-tools@9.0.1/dist/web/install-button.js?module"></script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CYD Snapmaker Screen Web Flasher</title>
+  <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+  <style>
+    body { background: #0b0c10; color: #fff; font-family: monospace; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+    .card { background: #12141c; border: 2px solid #00e5ff; border-radius: 12px; padding: 30px; max-width: 500px; text-align: center; box-shadow: 0 0 20px rgba(0, 229, 255, 0.2); }
+    h1 { color: #00e5ff; margin-bottom: 10px; font-size: 22px; }
+    p { color: #aaa; font-size: 13px; line-height: 1.5; }
+    label { display: block; text-align: left; color: #00e5ff; font-weight: bold; margin-top: 25px; margin-bottom: 8px; font-size: 12px; }
+    select { width: 100%; padding: 12px; background: #1a1d24; border: 1px solid #333; color: white; border-radius: 6px; font-size: 14px; font-family: inherit; margin-bottom: 25px; cursor: pointer; }
+    esp-web-install-button { display: inline-block; margin-top: 10px; }
+    .version { margin-top: 30px; font-size: 11px; color: #555; }
+  </style>
 </head>
 <body>
+  <div class="card">
+    <h1>CYD SNAPMAKER SCREEN</h1>
+    <p>Connect your Cheap Yellow Display (CYD ESP32) to your computer via USB using a data cable. Close any slicers or serial monitors, select your hardware version, and click install.</p>
+    
+    <label for="hardware-select">SELECT HARDWARE MODEL:</label>
+    <select id="hardware-select" onchange="updateManifest()">
+      <option value="manifest_40.json">4.0" CYD Display (ST7796)</option>
+      <option value="manifest_28.json">2.8" CYD Display (ILI9341 Standard)</option>
+      <option value="manifest_28_dual_usb.json">2.8" CYD Display (ST7789 Dual-USB)</option>
+    </select>
 
-    <div class="container">
-        <h1>CYD Snapmaker Screen</h1>
-        <p>Connect your Cheap Yellow Display (CYD ESP32) to your computer via USB using a data cable. Close any slicers or serial monitors, select your hardware version, and click install.</p>
-        
-        <!-- Hardware Selection Dropdown -->
-        <label class="select-label" for="screen-select">Select Hardware Model:</label>
-        <select id="screen-select">
-            <option value="manifest_40.json" selected>4.0" CYD Display (ST7796)</option>
-            <option value="manifest_28.json">2.8" CYD Display (ILI9341)</option>
-        </select>
+    <esp-web-install-button id="install-btn" manifest="manifest_40.json"></esp-web-install-button>
 
-        <!-- The Flash Button -->
-        <esp-web-install-button id="install-btn" manifest="manifest_40.json"></esp-web-install-button>
-        
-        <div class="footer">
-            v2.0.1 Firmware by Nates Print Shop
-        </div>
-    </div>
+    <div class="version">v2.0.2 Firmware by Nates Print Shop</div>
+  </div>
 
-    <script>
-        const select = document.getElementById('screen-select');
-        const installBtn = document.getElementById('install-btn');
-
-        select.addEventListener('change', () => {
-            installBtn.setAttribute('manifest', select.value);
-        });
-    </script>
+  <script>
+    function updateManifest() {
+      const select = document.getElementById('hardware-select');
+      const btn = document.getElementById('install-btn');
+      btn.setAttribute('manifest', select.value);
+    }
+  </script>
 </body>
 </html>
