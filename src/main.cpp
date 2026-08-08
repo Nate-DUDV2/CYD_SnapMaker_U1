@@ -329,8 +329,8 @@ void loadFilesFromSD() {
     if (!file.isDirectory()) {
       String fname = String(file.name());
       if (fname.endsWith(".gcode") || fname.endsWith(".GCODE") || fname.endsWith(".3mf")) {
-         if (fname.startsWith("/")) fname.remove(0, 1);
-         fileList[fileCount++] = fname;
+          if (fname.startsWith("/")) fname.remove(0, 1);
+          fileList[fileCount++] = fname;
       }
     }
     file = root.openNextFile();
@@ -672,9 +672,13 @@ void setup() {
   pinMode(TFT_BL, OUTPUT);
   digitalWrite(TFT_BL, HIGH);
   tft.init();
-  tft.setRotation(3); 
 
   preferences.begin("u1_config", false);
+  
+  // Dynamic rotation check (defaults to 3 for standard landscape)
+  int screenRotation = preferences.getInt("rotation", 3);
+  tft.setRotation(screenRotation);
+
   invertDisplay = preferences.getBool("invertDisplay", false);
   tft.invertDisplay(invertDisplay);
 
@@ -690,7 +694,7 @@ void setup() {
   drawBootLogo();
 
 #ifdef BOARD_CYD_28
-  touch.setRotation(3);
+  touch.setRotation(screenRotation);
   if (SD.begin(SD_CS)) {
     sdCardReady = true;
     sdCardTotal = SD.totalBytes() / (1024 * 1024); 
@@ -698,7 +702,6 @@ void setup() {
     loadFilesFromSD();
   }
 #elif defined(BOARD_40_INCH)
-  // Dedicated VSPI setup for 4.0" SD card as defined in the vendor spec
   pinMode(SD_CS, OUTPUT);
   digitalWrite(SD_CS, HIGH);
   sdSPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
@@ -804,7 +807,6 @@ void setup() {
   wm.addParameter(&custom_ip);
   wm.addParameter(&custom_name);
 
-  // Uses unique AP Name per screen based on MAC Address
   if (!wm.autoConnect(defaultAP.c_str())) ESP.restart();
   
   if (shouldSaveConfig) {
@@ -814,7 +816,11 @@ void setup() {
     preferences.putString("printer_name", printerName);
   }
 
-  if (MDNS.begin(mdnsName)) Serial.println("mDNS started");
+  // mDNS initialization with explicit HTTP service broadcast
+  if (MDNS.begin(mdnsName)) {
+    MDNS.addService("http", "tcp", 80);
+    Serial.println("mDNS started");
+  }
   
   server.on("/", HTTP_GET, handleRoot);
   server.on("/tech", HTTP_GET, handleTech);
@@ -1226,7 +1232,7 @@ void loop() {
            }
         }
       }
-     else if (currentTab == 4) {
+      else if (currentTab == 4) {
         if (touchX > PX(48) && touchX < PX(178) && touchY > PY(125) && touchY < PY(165)) { 
             kbInput = String(printerIP);
             kbMode = 2; // IP Mode
@@ -1300,8 +1306,9 @@ void loop() {
     }
     lastUpdate = millis();
   }
-  
-}void drawCornerMarker(int corner, uint16_t color) {
+}
+
+void drawCornerMarker(int corner, uint16_t color) {
   int w = SCREEN_W;
   int h = SCREEN_H;
   if (corner == 0) { tft.drawFastHLine(0, 0, 15, color); tft.drawLine(0, 0, 15, 15, color); tft.drawFastVLine(0, 0, 15, color); } 
@@ -2053,7 +2060,7 @@ void sendGcode(String command) {
 }
 
 String getWebHeader(String activePage) {
-  String html = "<html><head><meta name='viewport' content='width=device-width, initial-scale=1'>";
+  String html = "<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
   if (activePage == "home") { html += "<meta http-equiv='refresh' content='5'>"; }
   
   html += "<style>";
@@ -2068,7 +2075,7 @@ String getWebHeader(String activePage) {
   html += ".stat h4 { margin: 0; font-size: 12px; color: #888; text-transform: uppercase; } ";
   html += ".stat div { font-size: 24px; font-weight: bold; margin-top: 8px; color: #00E5FF; font-family: 'Courier New', Courier, monospace; } ";
   html += ".stat.clickable:hover { border-color: #00E5FF; background: #2A3B5C; cursor: pointer; } ";
-  html += "input[type=text], input[type=number], select { width: 100%; padding: 12px; margin: 8px 0 16px; box-sizing: border-box; background: #1a1d24; border: 1px solid #333; color: white; border-radius: 6px; } ";
+  html += "input[type=text], input[type=password], input[type=number], select { width: 100%; padding: 12px; margin: 8px 0 16px; box-sizing: border-box; background: #1a1d24; border: 1px solid #333; color: white; border-radius: 6px; } ";
   html += ".btn { width: 100%; padding: 14px; background: #00E5FF; color: black; border: none; border-radius: 6px; font-weight: bold; font-size: 16px; cursor: pointer; display: block; box-sizing: border-box; text-align: center; text-decoration: none; } ";
   html += "</style>";
   html += "<script>";
@@ -2171,7 +2178,17 @@ void handleTech() {
   html += "<option value='1'" + String(invertDisplay ? " selected" : "") + ">Inverted (Fixes washed out colors)</option>";
   html += "</select>";
 
-  // --- THEME CUSTOMIZER ENGINE ---
+  // Screen Rotation Dropdown for Clone Panels
+  int currentRot = preferences.getInt("rotation", 3);
+  html += "<label style='color:#888; font-weight:bold; font-size:12px;'>SCREEN ROTATION</label><br>";
+  html += "<select name='rotation'>";
+  html += "<option value='3'" + String(currentRot == 3 ? " selected" : "") + ">Landscape Default</option>";
+  html += "<option value='1'" + String(currentRot == 1 ? " selected" : "") + ">Landscape Inverted</option>";
+  html += "<option value='0'" + String(currentRot == 0 ? " selected" : "") + ">Portrait</option>";
+  html += "<option value='2'" + String(currentRot == 2 ? " selected" : "") + ">Portrait Inverted</option>";
+  html += "</select>";
+
+  // Theme Customizer Engine
   html += "<hr style='border:1px solid #333; margin:15px 0;'>";
   html += "<h3 style='color:#00E5FF; margin-top:0;'>Theme Customization</h3>";
   html += "<label style='color:#888; font-weight:bold; font-size:12px;'>UI THEME</label><br>";
@@ -2196,7 +2213,7 @@ void handleTech() {
   html += "<label style='color:#888; font-weight:bold; font-size:12px;'>NEW WI-FI SSID (Leave blank to keep current)</label><br>";
   html += "<input type='text' name='wifi_ssid' placeholder='Current: " + WiFi.SSID() + "'>";
   html += "<label style='color:#888; font-weight:bold; font-size:12px;'>NEW WI-FI PASSWORD</label><br>";
-  html += "<input type='text' name='wifi_pass' placeholder='••••••••'>";
+  html += "<input type='password' name='wifi_pass' placeholder='********'>";
   html += "<input type='submit' value='Save & Reboot' class='btn' style='margin-top:10px;'></form>";
   html += "<a href='/calibrate' class='btn' style='background:#2A3B5C; color:#00E5FF; margin-top:15px;'>Recalibrate Touchscreen</a></div>";
   
@@ -2257,6 +2274,11 @@ void handleSave() {
     invertDisplay = (server.arg("invert_display") == "1");
     preferences.putBool("invertDisplay", invertDisplay);
     tft.invertDisplay(invertDisplay);
+  }
+
+  if (server.hasArg("rotation")) {
+    int newRot = server.arg("rotation").toInt();
+    preferences.putInt("rotation", newRot);
   }
 
   if (server.hasArg("theme")) {
