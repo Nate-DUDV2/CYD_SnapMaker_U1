@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 #include <SPI.h>
 #include <TFT_eSPI.h> 
+#include <TFT_Touch.h> 
 #include <Preferences.h>
 #include <WiFiManager.h>
 #include <WebServer.h>
@@ -12,7 +13,7 @@
 #include <FS.h>
 
 // --- GLOBAL FIRMWARE VERSION ---
-#define FW_VERSION "v2.0.1"
+#define FW_VERSION "v2.0.2"
 
 // ==========================================
 // --- BOARD SELECTION ---
@@ -20,7 +21,6 @@
 // ==========================================
 
 #ifdef BOARD_CYD_28
-  #include <TFT_Touch.h>
   #define TFT_BL 21
   #define SD_CS 5 
   #define RTP_DOUT 39
@@ -29,13 +29,16 @@
   #define RTP_CS   33
   #define SCREEN_W 320
   #define SCREEN_H 240
-  TFT_Touch touch = TFT_Touch(RTP_CS, RTP_SCK, RTP_DIN, RTP_DOUT);
 #elif defined(BOARD_40_INCH)
   #define TFT_BL 27
   #define SD_CS   5
   #define SD_SCK  18
   #define SD_MISO 19
   #define SD_MOSI 23
+  #define RTP_DOUT 39
+  #define RTP_DIN  32
+  #define RTP_SCK  25
+  #define RTP_CS   33
   #define SCREEN_W 480
   #define SCREEN_H 320
   SPIClass sdSPI(VSPI);
@@ -46,6 +49,8 @@
 #define PY(y) ((y) * SCREEN_H / 240)
 
 TFT_eSPI tft = TFT_eSPI();
+TFT_Touch touch = TFT_Touch(RTP_CS, RTP_SCK, RTP_DIN, RTP_DOUT);
+
 Preferences preferences;
 WebServer server(80);
 
@@ -298,7 +303,7 @@ void configModeCallback(WiFiManager *myWiFiManager) {
 }
 
 // -------------------------------------------------------------
-// UNIFIED TOUCH WRAPPER
+// UNIFIED TOUCH WRAPPER - RESTORED SPLIT FOR 4.0 INCH
 // -------------------------------------------------------------
 bool getTouchCoord(int &x, int &y) {
 #ifdef BOARD_CYD_28
@@ -383,6 +388,10 @@ void fetchKlipperFiles() {
 void syncFilamentToKlipper(int tIdx) {
   blockSyncUntil = millis() + 5000;
   HTTPClient http;
+  
+  // PREVENTS FREEZING: Drops the connection if Klipper doesn't respond fast enough
+  http.setTimeout(1500); 
+
   http.begin("http://" + String(printerIP) + ":7125/printer/filament_detect/set");
   http.addHeader("Content-Type", "application/json");
 
@@ -851,11 +860,18 @@ void loop() {
 
   int touchX = 0, touchY = 0;
   if (getTouchCoord(touchX, touchY)) {
-    if (millis() - lastTouchTime > 250) { 
-      lastTouchTime = millis(); 
+    
+    // --- NEW: BLOCK ALL TOUCHES WHILE TOAST IS ACTIVE ---
+    if (toastExpireTime > 0) {
+        lastTouchTime = millis();
+    }
+    // ----------------------------------------------------
+    
+    else if (millis() - lastTouchTime > 250) { 
       bool modalForceClosed = false;
 
       if (activeModal > 0 && touchX < PX(42)) {
+          delay(150); lastTouchTime = millis();
           activeModal = 0;
           modalForceClosed = true;
       }
@@ -882,6 +898,8 @@ void loop() {
                        showToast("Error", "No Tool Active", true);
                    }
                }
+               int dummyX, dummyY;
+               while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
                closedModal = true; handledTouch = true; break;
             }
           }
@@ -894,12 +912,14 @@ void loop() {
                int speeds[] = {50, 100, 150};
                sendGcode("M220 S" + String(speeds[c]));
                showToast("Print Speed", String(speeds[c]) + "%");
+               int dummyX, dummyY; while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
                closedModal = true; handledTouch = true; break;
             }
             if (touchX > bx && touchX < bx + PX(65) && touchY > PY(125) && touchY < PY(170)) {
                int fans[] = {0, 127, 255};
                sendGcode("M106 S" + String(fans[c]));
                showToast("Part Fan", String((int)(fans[c]*100/255)) + "%");
+               int dummyX, dummyY; while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
                closedModal = true; handledTouch = true; break;
             }
           }
@@ -914,6 +934,7 @@ void loop() {
             if (touchX > bx && touchX < bx + PX(110) && touchY > by && touchY < by + PY(45)) {
                sendGcode("T" + String(i));
                showToast("Tool Change", "Swapped to T" + String(i+1));
+               int dummyX, dummyY; while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
                closedModal = true; handledTouch = true; break;
             }
           }
@@ -921,47 +942,52 @@ void loop() {
              String parkCmd = (activeTool <= 0) ? "park_extruder" : "park_extruder" + String(activeTool);
              sendGcode(parkCmd); 
              showToast("Tool Change", "Parking Tool");
+             int dummyX, dummyY; while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
              closedModal = true; handledTouch = true;
           }
           if (!handledTouch) closedModal = true;
         }
         else if (activeModal >= 10 && activeModal <= 13) {
           int tIdx = activeModal - 10;
+          handledTouch = true; 
           
-          if (touchY < PY(40)) { handledTouch = true; } 
-          
-          else if (touchY > PY(40) && touchY < PY(75)) {
-            if (touchX > PX(50) && touchX < PX(105)) { sendGcode("M104 T" + String(tIdx) + " S0"); showToast("Heater Off", "Tool " + String(tIdx+1)); handledTouch = true; }
-            else if (touchX > PX(115) && touchX < PX(170)) { sendGcode("M104 T" + String(tIdx) + " S200"); showToast("Heating", "Tool " + String(tIdx+1) + " to 200C"); handledTouch = true; }
-            else if (touchX > PX(180) && touchX < PX(235)) { sendGcode("M104 T" + String(tIdx) + " S220"); showToast("Heating", "Tool " + String(tIdx+1) + " to 220C"); handledTouch = true; }
-            else if (touchX > PX(245) && touchX < PX(300)) { sendGcode("M104 T" + String(tIdx) + " S240"); showToast("Heating", "Tool " + String(tIdx+1) + " to 240C"); handledTouch = true; }
+          if (touchY < PY(82)) {
+            if (touchX < PX(110)) { sendGcode("M104 T" + String(tIdx) + " S0"); showToast("Heater Off", "Tool " + String(tIdx+1)); }
+            else if (touchX < PX(175)) { sendGcode("M104 T" + String(tIdx) + " S200"); showToast("Heating", "Tool " + String(tIdx+1) + " to 200C"); }
+            else if (touchX < PX(240)) { sendGcode("M104 T" + String(tIdx) + " S220"); showToast("Heating", "Tool " + String(tIdx+1) + " to 220C"); }
+            else { sendGcode("M104 T" + String(tIdx) + " S240"); showToast("Heating", "Tool " + String(tIdx+1) + " to 240C"); }
           }
-          else if (touchY > PY(90) && touchY < PY(125)) {
-            if (touchX > PX(50) && touchX < PX(170)) { 
+          else if (touchY >= PY(82) && touchY < PY(132)) {
+            if (touchX < PX(175)) { 
+              int dummyX, dummyY;
+              while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
               kbInput = filType[tIdx];
               kbMode = 0; 
               activeModal = 20 + tIdx; 
               drawKeyboardModal(tIdx); 
+              lastTouchTime = millis();
               return; 
             } 
-            else if (touchX > PX(180) && touchX < PX(300)) { 
+            else { 
+              int dummyX, dummyY;
+              while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
               activeModal = 30 + tIdx; 
               drawColorPickerModal(tIdx); 
+              lastTouchTime = millis();
               return; 
             }
           }
-          else if (touchY > PY(140) && touchY < PY(175)) {
+          else if (touchY >= PY(132) && touchY < PY(180)) {
             String toolName = (tIdx == 0) ? "extruder" : "extruder" + String(tIdx);
             String pickCmd = (tIdx == 0) ? "pick_extruder" : "pick_extruder" + String(tIdx);
             String parkCmd = (tIdx == 0) ? "park_extruder" : "park_extruder" + String(tIdx);
 
-            if (touchX > PX(50) && touchX < PX(170)) {
+            if (touchX < PX(175)) {
               if (toolAttached[tIdx]) { sendGcode(parkCmd); showToast("Tool", "Parking..."); }
               else { sendGcode(pickCmd); showToast("Tool", "Attaching T" + String(tIdx+1)); }
               toolAttached[tIdx] = !toolAttached[tIdx];
               drawToolModal(tIdx);
-              handledTouch = true;
-            } else if (touchX > PX(180) && touchX < PX(300)) {
+            } else {
               if (toolLoaded[tIdx]) { 
                 sendGcode(pickCmd + "\nACTIVATE_EXTRUDER EXTRUDER=" + toolName + "\nINNER_FILAMENT_UNLOAD"); 
                 showToast("Filament", "Unloading T" + String(tIdx+1)); 
@@ -972,17 +998,19 @@ void loop() {
               }
               toolLoaded[tIdx] = !toolLoaded[tIdx];
               drawToolModal(tIdx);
-              handledTouch = true;
             }
           }
-          else if (touchY > PY(185) && touchX > PX(50) && touchX < PX(300)) {
-            closedModal = true; handledTouch = true;
+          else if (touchY >= PY(180)) {
+            int dummyX, dummyY;
+            while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
+            closedModal = true;
           }
-          if (!handledTouch) closedModal = true;
         }
         else if ((activeModal >= 20 && activeModal <= 23) || activeModal == 51) {
           int tIdx = (activeModal == 51) ? 0 : activeModal - 20;
-          if (touchY < PY(70)) { handledTouch = true; }
+          handledTouch = true; 
+          
+          if (touchY < PY(70)) { }
           else if (touchY >= PY(70) && touchY < PY(195)) {
               int r = (touchY - PY(70)) / PY(31); 
               if (r < 0) r = 0; if (r > 3) r = 3;
@@ -998,19 +1026,27 @@ void loop() {
                   int maxLen = (kbMode == 0) ? 10 : ((kbMode == 3) ? 20 : 6);
                   if (kbInput.length() < maxLen) kbInput += key;
               }
+              
+              int dummyX, dummyY;
+              while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
+              
               updateKeyboardInputBox(); 
-              handledTouch = true;
+              lastTouchTime = millis();
           }
           else if (touchY >= PY(195)) {
+             int dummyX, dummyY;
+             while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
+             
              if (touchX < PX(125)) { 
                 closedModal = true; 
                 if(activeModal != 51) { returnToTool = true; targetTool = tIdx; }
              }
              else if (touchX >= PX(125) && touchX < PX(230)) { 
                 if ((kbMode == 0 || kbMode == 3) && kbInput.length() < ((kbMode == 3) ? 20 : 10)) { 
-                    kbInput += " "; updateKeyboardInputBox(); 
+                    kbInput += " "; 
+                    updateKeyboardInputBox(); 
+                    lastTouchTime = millis();
                 }
-                handledTouch = true;
              }
              else if (touchX >= PX(230)) { 
                 if (kbMode == 3) {
@@ -1038,7 +1074,9 @@ void loop() {
           }
         }
         else if (activeModal == 50) { 
-          if (touchY < PY(70)) { handledTouch = true; }
+          handledTouch = true; 
+          
+          if (touchY < PY(70)) { }
           else if (touchY >= PY(70) && touchY < PY(200)) {
               int r = (touchY - PY(75)) / PY(32);
               int c = (touchX - PX(70)) / PX(60);
@@ -1053,11 +1091,18 @@ void loop() {
                   } else {
                       if (kbInput.length() < 15) kbInput += String(idx + 1);
                   }
+                  
+                  int dummyX, dummyY;
+                  while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
+                  
                   updateKeyboardInputBox();
+                  lastTouchTime = millis();
               }
-              handledTouch = true;
           }
           else if (touchY >= PY(200)) {
+              int dummyX, dummyY;
+              while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
+              
               if (touchX < PX(160)) { 
                   closedModal = true; 
               } else { 
@@ -1066,7 +1111,6 @@ void loop() {
                   showToast("Saved", "Printer IP Updated!");
                   closedModal = true; 
               }
-              handledTouch = true;
           }
         }
         else if (activeModal >= 30 && activeModal <= 33) {
@@ -1083,17 +1127,26 @@ void loop() {
                   preferences.putString(("filColor" + String(tIdx)).c_str(), rgb565ToHex(filColor[tIdx]));
                   syncFilamentToKlipper(tIdx);
                   showToast("Saved", "Tool " + String(tIdx+1) + " color updated");
+                  
+                  int dummyX, dummyY;
+                  while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
+                  
                   closedModal = true; returnToTool = true; targetTool = tIdx; 
               }
           }
           else if (touchY >= PY(155) && touchY < PY(195)) { 
+              int dummyX, dummyY;
+              while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
               kbMode = 1; 
               kbInput = "";
               activeModal = 20 + tIdx; 
               drawKeyboardModal(tIdx);
+              lastTouchTime = millis();
               return; 
           }
           else if (touchY >= PY(195)) { 
+              int dummyX, dummyY;
+              while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
               closedModal = true; returnToTool = true; targetTool = tIdx; 
           }
         }
@@ -1107,6 +1160,9 @@ void loop() {
              handledTouch=true;
           }
           else if (touchY >= PY(195)) {
+             int dummyX, dummyY;
+             while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
+             
              if (touchX < PX(145)) { 
                  closedModal = true; handledTouch=true; 
              } else {
@@ -1132,7 +1188,7 @@ void loop() {
              else if (currentTab == 4) drawSettingsTab();
           }
         }
-        if (!modalForceClosed) return; 
+        if (!modalForceClosed) lastTouchTime = millis(); return; 
       }
 
       if (touchX < PX(42)) {
@@ -1157,6 +1213,7 @@ void loop() {
             else if (currentTab == 4) drawSettingsTab();
           }
         }
+        lastTouchTime = millis();
         return;
       } 
       
@@ -1211,6 +1268,7 @@ void loop() {
                 printTabSource = 1; fileScrollIndex = 0; loadFilesFromSD(); drawPrintTab(); 
                 showToast("File Source", "Loaded Screen SD Files");
             }
+            lastTouchTime = millis();
             return;
         }
 
@@ -1234,16 +1292,22 @@ void loop() {
       }
       else if (currentTab == 4) {
         if (touchX > PX(48) && touchX < PX(178) && touchY > PY(125) && touchY < PY(165)) { 
+            int dummyX, dummyY;
+            while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
             kbInput = String(printerIP);
             kbMode = 2; // IP Mode
             activeModal = 50; 
             drawKeyboardModal(0);
+            lastTouchTime = millis();
         }
         else if (touchX > PX(184) && touchX < PX(314) && touchY > PY(125) && touchY < PY(165)) {
+            int dummyX, dummyY;
+            while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
             kbInput = String(printerName);
             kbMode = 3; // Name Mode
             activeModal = 51; 
             drawKeyboardModal(0);
+            lastTouchTime = millis();
         }
         else if (touchX > PX(48) && touchX < PX(178) && touchY > PY(175) && touchY < PY(215)) {
           touchCalibrate();
@@ -1265,6 +1329,7 @@ void loop() {
           showToast("Nates Print Shop", "Custom Firmware " + String(FW_VERSION) + " Active");
         }
       }
+      lastTouchTime = millis();
     }
   }
 
@@ -1997,7 +2062,7 @@ void updateDynamicUI() {
 
 void fetchPrinterData() {
   HTTPClient http;
-  String url = "http://" + String(printerIP) + ":7125/printer/objects/query?print_stats&toolhead&extruder&extruder1&extruder2&extruder3&heater_bed&fan&gcode_move&display_status";
+  String url = "http://" + String(printerIP) + ":7125/printer/objects/query?print_stats&toolhead&extruder&extruder1&extruder2&extruder3&heater_bed&fan&gcode_move&display_status&print_task_config";
   
   http.begin(url);
   int httpCode = http.GET();
@@ -2036,6 +2101,28 @@ void fetchPrinterData() {
       else if(tHead == "extruder2") activeTool = 2;
       else if(tHead == "extruder3") activeTool = 3;
       else activeTool = -1;
+
+      // PULL LIVE FILAMENT COLORS AND TYPES FROM KLIPPER
+      JsonObject taskConfig = status["print_task_config"];
+      if (!taskConfig.isNull()) {
+        JsonArray types = taskConfig["filament_type"];
+        JsonArray colors = taskConfig["filament_color_rgba"];
+        
+        if (!types.isNull() && !colors.isNull()) {
+          for (int i = 0; i < 4; i++) {
+            if (!types[i].isNull()) {
+              String fType = types[i].as<String>();
+              if (fType != "null" && fType.length() > 0) filType[i] = fType;
+            }
+            if (!colors[i].isNull()) {
+              String fColor = colors[i].as<String>();
+              if (fColor != "null" && fColor.length() >= 6) {
+                filColor[i] = hexToRGB565(fColor.substring(0, 6));
+              }
+            }
+          }
+        }
+      }
     }
   }
   http.end();
@@ -2131,12 +2218,33 @@ void handleRoot() {
 
 void handleTech() {
   String html = getWebHeader("tech");
-  
+
+#ifdef BOARD_40_INCH
+  String sysBoard = "ESP32 4.0-inch CYD";
+  String sysRes = "4.0 inch TFT LCD (480 x 320)";
+  String sysDisp = "ST7796 (VSPI)";
+  String sysTouch = "XPT2046 (Shared SPI)";
+#elif defined(BOARD_CYD_28)
+  String sysBoard = "ESP32-2432S028 (CYD 2.8)";
+  String sysRes = "2.8 inch TFT LCD (320 x 240)";
+#ifdef ST7789_2_DRIVER
+  String sysDisp = "ST7789 (Dual-USB Edition)";
+#else
+  String sysDisp = "ILI9341 (Standard)";
+#endif
+  String sysTouch = "XPT2046 (Resistive SPI)";
+#else
+  String sysBoard = "Unknown ESP32";
+  String sysRes = "Unknown Resolution";
+  String sysDisp = "Unknown Controller";
+  String sysTouch = "Unknown Touch";
+#endif
+
   html += "<div class='card'><h3 style='margin-top:0;'>Hardware Diagnostics</h3>";
-  html += "<p><b>Board Type:</b> ESP32-32E (LCDWIKI E32R28T)</p>";
-  html += "<p><b>Screen Spec:</b> 2.8 inch TFT LCD (320 x 240 Resolution)</p>";
-  html += "<p><b>Display Controller:</b> ILI9341 (HSPI Interface)</p>";
-  html += "<p><b>Touch Controller:</b> XPT2046 (Resistive SPI)</p>";
+  html += "<p><b>Board Type:</b> " + sysBoard + "</p>";
+  html += "<p><b>Screen Spec:</b> " + sysRes + "</p>";
+  html += "<p><b>Display Controller:</b> " + sysDisp + "</p>";
+  html += "<p><b>Touch Controller:</b> " + sysTouch + "</p>";
   html += "<p><b>Target Printer IP:</b> " + String(printerIP) + "</p>";
   html += "<p><b>Wi-Fi Network:</b> " + WiFi.SSID() + "</p>";
   html += "<p><b>Signal Strength:</b> " + String(WiFi.RSSI()) + " dBm</p>";
@@ -2178,7 +2286,7 @@ void handleTech() {
   html += "<option value='1'" + String(invertDisplay ? " selected" : "") + ">Inverted (Fixes washed out colors)</option>";
   html += "</select>";
 
-  // Screen Rotation Dropdown for Clone Panels
+  // Screen Rotation Dropdown for Dual-USB Edition
   int currentRot = preferences.getInt("rotation", 3);
   html += "<label style='color:#888; font-weight:bold; font-size:12px;'>SCREEN ROTATION</label><br>";
   html += "<select name='rotation'>";
