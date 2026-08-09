@@ -1,6 +1,6 @@
 {
-  "name": "CYD Snapmaker Screen v2.0.2 (2.8\" Dual-USB)",
-  "version": "2.0.2",
+  "name": "CYD Snapmaker Screen (2.8\" Dual-USB)",
+  "version": "2.0.3",
   "new_install_prompt_erase": true,
   "builds": [
     {

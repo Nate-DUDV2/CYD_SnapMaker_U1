@@ -11,9 +11,17 @@
 #include <ESPmDNS.h>
 #include <SD.h>
 #include <FS.h>
+#include <esp_adc_cal.h>
+
+#ifdef BOARD_40_INCH
+#include <Wire.h>
+#include <Adafruit_BME280.h>
+Adafruit_BME280 bme;
+bool bmeReady = false;
+#endif
 
 // --- GLOBAL FIRMWARE VERSION ---
-#define FW_VERSION "v2.0.2"
+#define FW_VERSION "v2.0.3"
 
 // ==========================================
 // --- BOARD SELECTION ---
@@ -35,10 +43,6 @@
   #define SD_SCK  18
   #define SD_MISO 19
   #define SD_MOSI 23
-  #define RTP_DOUT 39
-  #define RTP_DIN  32
-  #define RTP_SCK  25
-  #define RTP_CS   33
   #define SCREEN_W 480
   #define SCREEN_H 320
   SPIClass sdSPI(VSPI);
@@ -49,13 +53,16 @@
 #define PY(y) ((y) * SCREEN_H / 240)
 
 TFT_eSPI tft = TFT_eSPI();
+
+#ifdef BOARD_CYD_28
 TFT_Touch touch = TFT_Touch(RTP_CS, RTP_SCK, RTP_DIN, RTP_DOUT);
+#endif
 
 Preferences preferences;
 WebServer server(80);
 
 // --- DYNAMIC SETTINGS ---
-char printerIP[32] = "192.168.87.125"; 
+char printerIP[32] = "192.168.1.100"; 
 char printerName[32] = "Snapmaker U1"; 
 char mdnsName[32] = "u1-display"; 
 bool shouldSaveConfig = false;
@@ -64,6 +71,11 @@ uint64_t sdCardTotal = 0;
 uint64_t sdCardUsed = 0;
 bool invertDisplay = false; 
 unsigned long blockSyncUntil = 0; 
+bool showBattery = false; 
+int envMode = 0; // 0=Disabled, 1=Web Only, 2=Web+Screen
+bool useFahrenheit = false; 
+float tempOffset = 0.0; // Calibration Offset
+float humOffset = 0.0;  // Calibration Offset
 
 // --- STATE VARIABLES ---
 unsigned long lastUpdate = 0;
@@ -151,6 +163,7 @@ void drawTempModal(int type);
 void drawSpeedFanModal();
 void drawActiveToolModal();
 void drawToolModal(int idx);
+void drawFilamentTypeModal(int idx); 
 void drawKeyboardModal(int idx);
 void updateKeyboardInputBox();
 void drawColorPickerModal(int idx);
@@ -172,6 +185,32 @@ void drawBootLogo();
 void configModeCallback(WiFiManager *myWiFiManager);
 String urlEncode(String str);
 void applyTheme();
+float getBatteryVoltage();
+int getBatteryPercentage(float volts);
+
+// --- BATTERY HELPER FUNCTIONS ---
+#define PIN_BAT_ADC 34
+float getBatteryVoltage() {
+  esp_adc_cal_characteristics_t adc_chars;
+  esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_12, ADC_WIDTH_BIT_12, 1100, &adc_chars);
+  
+  uint32_t raw_sum = 0;
+  for(int i = 0; i < 20; i++) {
+    raw_sum += analogRead(PIN_BAT_ADC);
+  }
+  uint32_t raw = raw_sum / 20;
+  
+  uint32_t mv = esp_adc_cal_raw_to_voltage(raw, &adc_chars) * 2; 
+  return mv / 1000.0f;
+}
+
+int getBatteryPercentage(float volts) {
+  if (volts <= 3.3f) return 0;
+  if (volts >= 4.15f) return 100;
+  int pct = (int)((volts - 3.3f) / (4.15f - 3.3f) * 100.0f);
+  return constrain(pct, 0, 100);
+}
+// --------------------------------
 
 uint16_t hexToRGB565(String hex) {
   if (hex.startsWith("#")) hex.remove(0, 1);
@@ -302,9 +341,6 @@ void configModeCallback(WiFiManager *myWiFiManager) {
   tft.setTextDatum(TL_DATUM);
 }
 
-// -------------------------------------------------------------
-// UNIFIED TOUCH WRAPPER - RESTORED SPLIT FOR 4.0 INCH
-// -------------------------------------------------------------
 bool getTouchCoord(int &x, int &y) {
 #ifdef BOARD_CYD_28
   if (touch.Pressed()) {
@@ -389,9 +425,7 @@ void syncFilamentToKlipper(int tIdx) {
   blockSyncUntil = millis() + 5000;
   HTTPClient http;
   
-  // PREVENTS FREEZING: Drops the connection if Klipper doesn't respond fast enough
   http.setTimeout(1500); 
-
   http.begin("http://" + String(printerIP) + ":7125/printer/filament_detect/set");
   http.addHeader("Content-Type", "application/json");
 
@@ -697,6 +731,13 @@ void setup() {
   customCard = preferences.getString("customCard", customCard);
   customText = preferences.getString("customText", customText);
   customAccent = preferences.getString("customAccent", customAccent);
+  
+  showBattery = preferences.getBool("showBattery", false); 
+  envMode = preferences.getInt("envMode", 0); 
+  useFahrenheit = preferences.getBool("useFahrenheit", false); 
+  tempOffset = preferences.getFloat("tempOffset", 0.0); // Load Temp Offset
+  humOffset = preferences.getFloat("humOffset", 0.0);   // Load Humidity Offset
+  
   applyTheme();
 
   tft.setTextSize(1); 
@@ -720,6 +761,20 @@ void setup() {
     sdCardUsed = SD.usedBytes() / (1024 * 1024);
     loadFilesFromSD();
   }
+  
+  // Initialize the BME280 Environment Sensor if attached to the I2C port
+  Wire.begin(32, 25);
+  if (bme.begin(0x77) || bme.begin(0x76)) {
+    bmeReady = true;
+    bme.setSampling(Adafruit_BME280::MODE_NORMAL,
+                    Adafruit_BME280::SAMPLING_X2,  // temp
+                    Adafruit_BME280::SAMPLING_X16, // pressure
+                    Adafruit_BME280::SAMPLING_X1,  // humidity
+                    Adafruit_BME280::FILTER_X16,
+                    Adafruit_BME280::STANDBY_MS_500);
+  } else {
+    Serial.println("BME280 not found on I2C port!");
+  }
 #endif
 
   // Generate unique network identifier using chip MAC address
@@ -730,7 +785,7 @@ void setup() {
   String defaultMDNS = "u1-display-" + macSuffix;
   String defaultAP = "Snapmaker-U1-" + macSuffix;
 
-  String savedIP = preferences.getString("printer_ip", "192.168.87.125");
+  String savedIP = preferences.getString("printer_ip", "192.168.1.100");
   String savedName = preferences.getString("printer_name", "Snapmaker U1");
   String savedMDNS = preferences.getString("mdns_name", defaultMDNS);
   
@@ -881,90 +936,93 @@ void loop() {
         int targetTool = 0;
         bool handledTouch = false;
         
+        // ---> MASSIVE FORGIVING HITBOXES FOR TEMPERATURES <---
         if (activeModal == 1 || activeModal == 2) {
-          for (int i = 0; i < 6; i++) {
-            int r = i / 2;
-            int c = i % 2;
-            int bx = PX(60) + c * PX(130);
-            int by = PY(45) + r * PY(60);
-            if (touchX > bx && touchX < bx + PX(110) && touchY > by && touchY < by + PY(45)) {
-               int val = (activeModal == 1) ? presetBed[i] : presetTool[i];
-               if (activeModal == 1) { sendGcode("M140 S" + String(val)); showToast("Heating Bed", String(val) + "C"); }
-               else { 
-                   if (activeTool >= 0) {
-                       sendGcode("M104 T" + String(activeTool) + " S" + String(val)); 
-                       showToast("Heating Tool " + String(activeTool+1), String(val) + "C"); 
-                   } else {
-                       showToast("Error", "No Tool Active", true);
-                   }
-               }
-               int dummyX, dummyY;
-               while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
-               closedModal = true; handledTouch = true; break;
-            }
-          }
-          if (!handledTouch) closedModal = true; 
+          if (touchY > PY(30)) {
+              int r = 0;
+              if (touchY > PY(95) && touchY < PY(155)) r = 1;
+              else if (touchY >= PY(155)) r = 2;
+              
+              int c = (touchX > PX(160)) ? 1 : 0;
+              int i = r * 2 + c;
+              
+              int val = (activeModal == 1) ? presetBed[i] : presetTool[i];
+              if (activeModal == 1) { sendGcode("M140 S" + String(val)); showToast("Heating Bed", String(val) + "C"); }
+              else { 
+                  if (activeTool >= 0) {
+                      sendGcode("M104 T" + String(activeTool) + " S" + String(val)); 
+                      showToast("Heating Tool " + String(activeTool+1), String(val) + "C"); 
+                  } else {
+                      showToast("Error", "No Tool Active", true);
+                  }
+              }
+              int dummyX, dummyY;
+              while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
+              closedModal = true; handledTouch = true;
+          } else { closedModal = true; }
         } 
+        // ---> MASSIVE FORGIVING HITBOXES FOR SPEED/FAN <---
         else if (activeModal == 7) {
-          for (int c = 0; c < 3; c++) {
-            int bx = PX(50) + c * PX(75);
-            if (touchX > bx && touchX < bx + PX(65) && touchY > PY(55) && touchY < PY(100)) {
-               int speeds[] = {50, 100, 150};
-               sendGcode("M220 S" + String(speeds[c]));
-               showToast("Print Speed", String(speeds[c]) + "%");
-               int dummyX, dummyY; while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
-               closedModal = true; handledTouch = true; break;
-            }
-            if (touchX > bx && touchX < bx + PX(65) && touchY > PY(125) && touchY < PY(170)) {
-               int fans[] = {0, 127, 255};
-               sendGcode("M106 S" + String(fans[c]));
-               showToast("Part Fan", String((int)(fans[c]*100/255)) + "%");
-               int dummyX, dummyY; while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
-               closedModal = true; handledTouch = true; break;
-            }
-          }
-          if (!handledTouch) closedModal = true;
+          if (touchY > PY(35) && touchY < PY(115)) {
+              int c = 0;
+              if (touchX > PX(110) && touchX < PX(190)) c = 1;
+              else if (touchX >= PX(190)) c = 2;
+              int speeds[] = {50, 100, 150};
+              sendGcode("M220 S" + String(speeds[c]));
+              showToast("Print Speed", String(speeds[c]) + "%");
+              int dummyX, dummyY; while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
+              closedModal = true; handledTouch = true; 
+          } else if (touchY >= PY(115) && touchY < PY(190)) {
+              int c = 0;
+              if (touchX > PX(110) && touchX < PX(190)) c = 1;
+              else if (touchX >= PX(190)) c = 2;
+              int fans[] = {0, 127, 255};
+              sendGcode("M106 S" + String(fans[c]));
+              showToast("Part Fan", String((int)(fans[c]*100/255)) + "%");
+              int dummyX, dummyY; while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
+              closedModal = true; handledTouch = true; 
+          } else { closedModal = true; }
         }
+        // ---> MASSIVE FORGIVING HITBOXES FOR ACTIVE TOOL <---
         else if (activeModal == 8) {
-          for (int i = 0; i < 4; i++) {
-            int r = i / 2;
-            int c = i % 2;
-            int bx = PX(60) + c * PX(130);
-            int by = PY(50) + r * PY(60);
-            if (touchX > bx && touchX < bx + PX(110) && touchY > by && touchY < by + PY(45)) {
-               sendGcode("T" + String(i));
-               showToast("Tool Change", "Swapped to T" + String(i+1));
-               int dummyX, dummyY; while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
-               closedModal = true; handledTouch = true; break;
-            }
-          }
-          if (!handledTouch && touchX > PX(60) && touchX < PX(300) && touchY > PY(180) && touchY < PY(220)) {
-             String parkCmd = (activeTool <= 0) ? "park_extruder" : "park_extruder" + String(activeTool);
-             sendGcode(parkCmd); 
-             showToast("Tool Change", "Parking Tool");
-             int dummyX, dummyY; while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
-             closedModal = true; handledTouch = true;
-          }
-          if (!handledTouch) closedModal = true;
+          if (touchY > PY(35) && touchY < PY(160)) {
+              int r = (touchY > PY(100)) ? 1 : 0;
+              int c = (touchX > PX(160)) ? 1 : 0;
+              int i = r * 2 + c;
+              sendGcode("T" + String(i));
+              showToast("Tool Change", "Swapped to T" + String(i+1));
+              int dummyX, dummyY; while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
+              closedModal = true; handledTouch = true; 
+          } else if (touchY >= PY(160) && touchY < PY(230)) {
+              String parkCmd = (activeTool <= 0) ? "park_extruder" : "park_extruder" + String(activeTool);
+              sendGcode(parkCmd); 
+              showToast("Tool Change", "Parking Tool");
+              int dummyX, dummyY; while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
+              closedModal = true; handledTouch = true;
+          } else { closedModal = true; }
         }
+        // ---> MASSIVE FORGIVING HITBOXES FOR TOOL MODAL <---
         else if (activeModal >= 10 && activeModal <= 13) {
           int tIdx = activeModal - 10;
           handledTouch = true; 
           
           if (touchY < PY(82)) {
-            if (touchX < PX(110)) { sendGcode("M104 T" + String(tIdx) + " S0"); showToast("Heater Off", "Tool " + String(tIdx+1)); }
-            else if (touchX < PX(175)) { sendGcode("M104 T" + String(tIdx) + " S200"); showToast("Heating", "Tool " + String(tIdx+1) + " to 200C"); }
-            else if (touchX < PX(240)) { sendGcode("M104 T" + String(tIdx) + " S220"); showToast("Heating", "Tool " + String(tIdx+1) + " to 220C"); }
+            int c = 0;
+            if (touchX > PX(90) && touchX <= PX(150)) c = 1;
+            else if (touchX > PX(150) && touchX <= PX(215)) c = 2;
+            else if (touchX > PX(215)) c = 3;
+            
+            if (c == 0) { sendGcode("M104 T" + String(tIdx) + " S0"); showToast("Heater Off", "Tool " + String(tIdx+1)); }
+            else if (c == 1) { sendGcode("M104 T" + String(tIdx) + " S200"); showToast("Heating", "Tool " + String(tIdx+1) + " to 200C"); }
+            else if (c == 2) { sendGcode("M104 T" + String(tIdx) + " S220"); showToast("Heating", "Tool " + String(tIdx+1) + " to 220C"); }
             else { sendGcode("M104 T" + String(tIdx) + " S240"); showToast("Heating", "Tool " + String(tIdx+1) + " to 240C"); }
           }
           else if (touchY >= PY(82) && touchY < PY(132)) {
-            if (touchX < PX(175)) { 
+            if (touchX < PX(160)) { // Perfect center split
               int dummyX, dummyY;
               while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
-              kbInput = filType[tIdx];
-              kbMode = 0; 
-              activeModal = 20 + tIdx; 
-              drawKeyboardModal(tIdx); 
+              activeModal = 60 + tIdx; 
+              drawFilamentTypeModal(tIdx); 
               lastTouchTime = millis();
               return; 
             } 
@@ -982,7 +1040,7 @@ void loop() {
             String pickCmd = (tIdx == 0) ? "pick_extruder" : "pick_extruder" + String(tIdx);
             String parkCmd = (tIdx == 0) ? "park_extruder" : "park_extruder" + String(tIdx);
 
-            if (touchX < PX(175)) {
+            if (touchX < PX(160)) { // Perfect center split
               if (toolAttached[tIdx]) { sendGcode(parkCmd); showToast("Tool", "Parking..."); }
               else { sendGcode(pickCmd); showToast("Tool", "Attaching T" + String(tIdx+1)); }
               toolAttached[tIdx] = !toolAttached[tIdx];
@@ -1078,26 +1136,31 @@ void loop() {
           
           if (touchY < PY(70)) { }
           else if (touchY >= PY(70) && touchY < PY(200)) {
-              int r = (touchY - PY(75)) / PY(32);
-              int c = (touchX - PX(70)) / PX(60);
-              if (r >= 0 && r < 4 && c >= 0 && c < 3) {
-                  int idx = r * 3 + c;
-                  if (idx == 11) { 
-                      if (kbInput.length() > 0) kbInput.remove(kbInput.length()-1);
-                  } else if (idx == 9) { 
-                      if (kbInput.length() < 15) kbInput += ".";
-                  } else if (idx == 10) { 
-                      if (kbInput.length() < 15) kbInput += "0";
-                  } else {
-                      if (kbInput.length() < 15) kbInput += String(idx + 1);
-                  }
-                  
-                  int dummyX, dummyY;
-                  while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
-                  
-                  updateKeyboardInputBox();
-                  lastTouchTime = millis();
+              int r = 0;
+              if (touchY > PY(105) && touchY <= PY(140)) r = 1;
+              else if (touchY > PY(140) && touchY <= PY(170)) r = 2;
+              else if (touchY > PY(170)) r = 3;
+
+              int c = 0;
+              if (touchX > PX(120) && touchX <= PX(180)) c = 1;
+              else if (touchX > PX(180)) c = 2;
+              
+              int idx = r * 3 + c;
+              if (idx == 11) { 
+                  if (kbInput.length() > 0) kbInput.remove(kbInput.length()-1);
+              } else if (idx == 9) { 
+                  if (kbInput.length() < 15) kbInput += ".";
+              } else if (idx == 10) { 
+                  if (kbInput.length() < 15) kbInput += "0";
+              } else {
+                  if (kbInput.length() < 15) kbInput += String(idx + 1);
               }
+              
+              int dummyX, dummyY;
+              while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
+              
+              updateKeyboardInputBox();
+              lastTouchTime = millis();
           }
           else if (touchY >= PY(200)) {
               int dummyX, dummyY;
@@ -1113,13 +1176,54 @@ void loop() {
               }
           }
         }
+        // ---> MASSIVE FORGIVING HITBOXES FOR FILAMENT GRID <---
+        else if (activeModal >= 60 && activeModal <= 63) {
+          int tIdx = activeModal - 60;
+          handledTouch = true;
+          
+          if (touchY >= PY(30) && touchY < PY(230)) {
+              int r = 0;
+              if (touchY > PY(80) && touchY <= PY(125)) r = 1;
+              else if (touchY > PY(125) && touchY <= PY(170)) r = 2;
+              else if (touchY > PY(170)) r = 3;
+
+              int c = 0;
+              if (touchX > PX(120) && touchX <= PX(200)) c = 1;
+              else if (touchX > PX(200)) c = 2;
+              
+              int i = r * 3 + c;
+              
+              int dummyX, dummyY;
+              while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
+              
+              if (i < 10) { 
+                  filType[tIdx] = FIL_TYPES[i];
+                  preferences.putString(("filType" + String(tIdx)).c_str(), filType[tIdx]);
+                  syncFilamentToKlipper(tIdx);
+                  showToast("Saved", "Tool " + String(tIdx+1) + " is now " + filType[tIdx]);
+                  closedModal = true; returnToTool = true; targetTool = tIdx; 
+              } else if (i == 10) { 
+                  kbInput = filType[tIdx];
+                  kbMode = 0; 
+                  activeModal = 20 + tIdx; 
+                  drawKeyboardModal(tIdx);
+                  lastTouchTime = millis();
+                  return; 
+              } else if (i == 11) { 
+                  closedModal = true; returnToTool = true; targetTool = tIdx; 
+              }
+          }
+        }
+        // ---> MASSIVE FORGIVING HITBOXES FOR COLOR PICKER <---
         else if (activeModal >= 30 && activeModal <= 33) {
           int tIdx = activeModal - 30;
-          if (touchY >= PY(40) && touchY < PY(155)) {
-              int r = (touchY - PY(40)) / PY(55);
-              if (r < 0) r = 0; if (r > 1) r = 1;
-              int c = (touchX - PX(42)) / PX(55);
-              if (c < 0) c = 0; if (c > 4) c = 4;
+          if (touchY >= PY(35) && touchY < PY(150)) {
+              int r = (touchY > PY(90)) ? 1 : 0;
+              int c = 0;
+              if (touchX > PX(85) && touchX <= PX(135)) c = 1;
+              else if (touchX > PX(135) && touchX <= PX(185)) c = 2;
+              else if (touchX > PX(185) && touchX <= PX(235)) c = 3;
+              else if (touchX > PX(235)) c = 4;
               
               int i = r * 5 + c;
               if (i >= 0 && i < 10) {
@@ -1134,7 +1238,7 @@ void loop() {
                   closedModal = true; returnToTool = true; targetTool = tIdx; 
               }
           }
-          else if (touchY >= PY(155) && touchY < PY(195)) { 
+          else if (touchY >= PY(150) && touchY < PY(195)) { 
               int dummyX, dummyY;
               while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
               kbMode = 1; 
@@ -1211,6 +1315,8 @@ void loop() {
             else if (currentTab == 2) drawMoveTab();
             else if (currentTab == 3) drawPrintTab();
             else if (currentTab == 4) drawSettingsTab();
+            
+            updateDynamicUI(); 
           }
         }
         lastTouchTime = millis();
@@ -1260,11 +1366,12 @@ void loop() {
       }
       else if (currentTab == 3) {
         if (touchY < PY(40)) {
-            if (touchX > PX(50) && touchX < PX(155) && printTabSource != 0) { 
+            // ---> UPDATED TOUCH ZONES FOR SMALLER BUTTONS <---
+            if (touchX > PX(45) && touchX < PX(140) && printTabSource != 0) { 
                 printTabSource = 0; fileScrollIndex = 0; fetchKlipperFiles(); drawPrintTab(); 
                 showToast("File Source", "Loaded Printer Klipper Files");
             }
-            if (touchX >= PX(160) && touchX < PX(265) && printTabSource != 1) { 
+            if (touchX >= PX(140) && touchX < PX(240) && printTabSource != 1) { 
                 printTabSource = 1; fileScrollIndex = 0; loadFilesFromSD(); drawPrintTab(); 
                 showToast("File Source", "Loaded Screen SD Files");
             }
@@ -1291,7 +1398,7 @@ void loop() {
         }
       }
       else if (currentTab == 4) {
-        if (touchX > PX(48) && touchX < PX(178) && touchY > PY(125) && touchY < PY(165)) { 
+        if (touchX > PX(48) && touchX < PX(178) && touchY > PY(130) && touchY < PY(170)) { 
             int dummyX, dummyY;
             while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
             kbInput = String(printerIP);
@@ -1300,7 +1407,7 @@ void loop() {
             drawKeyboardModal(0);
             lastTouchTime = millis();
         }
-        else if (touchX > PX(184) && touchX < PX(314) && touchY > PY(125) && touchY < PY(165)) {
+        else if (touchX > PX(184) && touchX < PX(314) && touchY > PY(130) && touchY < PY(170)) {
             int dummyX, dummyY;
             while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
             kbInput = String(printerName);
@@ -1353,6 +1460,7 @@ void loop() {
           else if ((activeModal >= 20 && activeModal <= 23) || activeModal == 50 || activeModal == 51) drawKeyboardModal(activeModal >= 20 && activeModal <= 23 ? activeModal - 20 : 0);
           else if (activeModal >= 30 && activeModal <= 33) drawColorPickerModal(activeModal - 30);
           else if (activeModal == 40) drawPrintOptionsModal();
+          else if (activeModal >= 60 && activeModal <= 63) drawFilamentTypeModal(activeModal - 60); 
       } else {
           tft.fillScreen(BG_COLOR);
           drawSidebar();
@@ -1367,7 +1475,7 @@ void loop() {
   if (millis() - lastUpdate > updateInterval) {
     if (WiFi.status() == WL_CONNECTED) {
       fetchPrinterData();
-      if (currentTab == 0 || currentTab == 1) updateDynamicUI(); 
+      updateDynamicUI(); 
     }
     lastUpdate = millis();
   }
@@ -1515,23 +1623,23 @@ void drawHomeTab() {
   tft.fillRect(PX(42), 0, SCREEN_W - PX(42), SCREEN_H, BG_COLOR);
   tft.setTextSize(1);
 
-  tft.fillRoundRect(PX(48), PY(22), PX(130), PY(54), 6, CARD_COLOR);
-  tft.drawRoundRect(PX(48), PY(22), PX(130), PY(54), 6, tft.color565(50, 55, 65));
+  tft.fillRoundRect(PX(48), PY(25), PX(130), PY(52), 6, CARD_COLOR);
+  tft.drawRoundRect(PX(48), PY(25), PX(130), PY(52), 6, tft.color565(50, 55, 65));
   tft.setTextDatum(TC_DATUM);
   tft.setTextColor(TEXT_GRAY, CARD_COLOR);
-  tft.drawString("BED TEMP", PX(113), PY(29), 1);
+  tft.drawString("BED TEMP", PX(113), PY(32), 1);
 
-  tft.fillRoundRect(PX(184), PY(22), PX(130), PY(54), 6, CARD_COLOR);
-  tft.drawRoundRect(PX(184), PY(22), PX(130), PY(54), 6, tft.color565(50, 55, 65));
-  tft.drawString("ACTIVE TOOL", PX(249), PY(29), 1);
+  tft.fillRoundRect(PX(184), PY(25), PX(130), PY(52), 6, CARD_COLOR);
+  tft.drawRoundRect(PX(184), PY(25), PX(130), PY(52), 6, tft.color565(50, 55, 65));
+  tft.drawString("ACTIVE TOOL", PX(249), PY(32), 1);
 
-  tft.fillRoundRect(PX(48), PY(82), PX(130), PY(54), 6, CARD_COLOR);
-  tft.drawRoundRect(PX(48), PY(82), PX(130), PY(54), 6, tft.color565(50, 55, 65));
-  tft.drawString("TOOL TEMP", PX(113), PY(89), 1);
+  tft.fillRoundRect(PX(48), PY(85), PX(130), PY(52), 6, CARD_COLOR);
+  tft.drawRoundRect(PX(48), PY(85), PX(130), PY(52), 6, tft.color565(50, 55, 65));
+  tft.drawString("TOOL TEMP", PX(113), PY(92), 1);
 
-  tft.fillRoundRect(PX(184), PY(82), PX(130), PY(54), 6, CARD_COLOR);
-  tft.drawRoundRect(PX(184), PY(82), PX(130), PY(54), 6, tft.color565(50, 55, 65));
-  tft.drawString("SPEED / FAN", PX(249), PY(89), 1);
+  tft.fillRoundRect(PX(184), PY(85), PX(130), PY(52), 6, CARD_COLOR);
+  tft.drawRoundRect(PX(184), PY(85), PX(130), PY(52), 6, tft.color565(50, 55, 65));
+  tft.drawString("SPEED / FAN", PX(249), PY(92), 1);
 
   tft.fillRoundRect(PX(48), PY(174), PX(130), PY(52), 6, BTN_BLUE);
   tft.setTextColor(TFT_WHITE, BTN_BLUE); tft.setTextDatum(MC_DATUM);
@@ -1674,6 +1782,36 @@ void drawToolModal(int idx) {
   tft.setTextColor(TFT_WHITE, BTN_BLUE);
   tft.drawString("Close", PX(42) + (SCREEN_W-PX(42))/2, PY(185) + PY(17), 2);
 
+  tft.setTextDatum(TL_DATUM);
+}
+
+void drawFilamentTypeModal(int idx) {
+  tft.fillRect(PX(42), 0, SCREEN_W - PX(42), SCREEN_H, BG_COLOR);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(TFT_WHITE, BG_COLOR);
+  tft.drawString("Select Material for Tool " + String(idx + 1), PX(42) + (SCREEN_W-PX(42))/2, PY(15), 2);
+
+  for (int i=0; i<12; i++) {
+    int r = i / 3;
+    int c = i % 3;
+    int bx = PX(52) + (c * PX(85));
+    int by = PY(40) + (r * PY(45));
+
+    if (i < 10) {
+        tft.fillRoundRect(bx, by, PX(75), PY(35), 4, CARD_COLOR);
+        tft.drawRoundRect(bx, by, PX(75), PY(35), 4, ACCENT_CYAN);
+        tft.setTextColor(TFT_WHITE, CARD_COLOR);
+        tft.drawString(FIL_TYPES[i], bx + PX(37), by + PY(17), 1);
+    } else if (i == 10) {
+        tft.fillRoundRect(bx, by, PX(75), PY(35), 4, BTN_BLUE);
+        tft.setTextColor(TFT_WHITE, BTN_BLUE);
+        tft.drawString("CUSTOM", bx + PX(37), by + PY(17), 1);
+    } else if (i == 11) {
+        tft.fillRoundRect(bx, by, PX(75), PY(35), 4, tft.color565(50, 55, 65));
+        tft.setTextColor(TFT_WHITE);
+        tft.drawString("CANCEL", bx + PX(37), by + PY(17), 1);
+    }
+  }
   tft.setTextDatum(TL_DATUM);
 }
 
@@ -1875,6 +2013,8 @@ void drawMoveTab() {
   tft.fillRoundRect(PX(235), PY(130), PX(50), PY(40), 6, CARD_COLOR); tft.drawString("HZ", PX(260), PY(150), 2); 
   tft.fillRoundRect(PX(235), PY(180), PX(50), PY(40), 6, CARD_COLOR); tft.drawString("Z-", PX(260), PY(200), 2);
   tft.setTextDatum(TL_DATUM);
+  
+  updateDynamicUI(); 
 }
 
 void drawPrintTab() {
@@ -1883,14 +2023,16 @@ void drawPrintTab() {
   tft.setTextSize(1);
   tft.setTextColor(TFT_WHITE, BG_COLOR);
 
-  tft.fillRoundRect(PX(50), PY(5), PX(105), PY(26), 4, printTabSource == 0 ? ACCENT_CYAN : CARD_COLOR);
+  int btnW = PX(85);
+  
+  tft.fillRoundRect(PX(50), PY(5), btnW, PY(26), 4, printTabSource == 0 ? ACCENT_CYAN : CARD_COLOR);
   tft.setTextColor(printTabSource == 0 ? BG_COLOR : TFT_WHITE);
   tft.setTextDatum(MC_DATUM);
-  tft.drawString("Printer Files", PX(102), PY(18), 1);
+  tft.drawString("Printer", PX(50) + btnW/2, PY(18), 1);
 
-  tft.fillRoundRect(PX(165), PY(5), PX(95), PY(26), 4, printTabSource == 1 ? ACCENT_CYAN : CARD_COLOR);
+  tft.fillRoundRect(PX(145), PY(5), btnW, PY(26), 4, printTabSource == 1 ? ACCENT_CYAN : CARD_COLOR);
   tft.setTextColor(printTabSource == 1 ? BG_COLOR : TFT_WHITE);
-  tft.drawString("Screen SD", PX(212), PY(18), 1);
+  tft.drawString("SD Card", PX(145) + btnW/2, PY(18), 1);
   
   tft.setTextDatum(TL_DATUM);
 
@@ -1922,6 +2064,8 @@ void drawPrintTab() {
   tft.fillRoundRect(PX(260), PY(135), PX(45), PY(85), 4, tft.color565(50, 55, 65));
   tft.drawString("DN", PX(282), PY(177), 2);
   tft.setTextDatum(TL_DATUM);
+  
+  updateDynamicUI(); 
 }
 
 void drawSettingsTab() {
@@ -1931,39 +2075,43 @@ void drawSettingsTab() {
   tft.drawString("SYS_CONFIG", PX(55), PY(6), 2);
 
   tft.setTextColor(TEXT_GRAY, BG_COLOR);
-  tft.setCursor(PX(55), PY(28));  tft.print("Printer IP: " + String(printerIP));
-  tft.setCursor(PX(55), PY(44));  tft.print("WiFi: " + WiFi.SSID() + " (" + String(WiFi.RSSI()) + "dBm)");
-  tft.setCursor(PX(55), PY(60));  tft.print("Display IP: " + WiFi.localIP().toString());
-  tft.setCursor(PX(55), PY(76));  tft.print("URL: http://" + String(mdnsName) + ".local");
-  tft.setCursor(PX(55), PY(92));  tft.print("MAC: " + WiFi.macAddress());
+  
+  // ---> NEW: SHIFTED UP TO MAKE ROOM FOR ENV SENSOR <---
+  tft.setCursor(PX(55), PY(25));  tft.print("Printer IP: " + String(printerIP));
+  tft.setCursor(PX(55), PY(38));  tft.print("WiFi: " + WiFi.SSID() + " (" + String(WiFi.RSSI()) + "dBm)");
+  tft.setCursor(PX(55), PY(51));  tft.print("Display IP: " + WiFi.localIP().toString());
+  tft.setCursor(PX(55), PY(64));  tft.print("URL: http://" + String(mdnsName) + ".local");
+  tft.setCursor(PX(55), PY(77));  tft.print("MAC: " + WiFi.macAddress());
 
   if (sdCardReady) {
     tft.setTextColor(TFT_GREEN, BG_COLOR);
-    tft.setCursor(PX(55), PY(108)); tft.print("SD Card: " + String((unsigned long)sdCardTotal) + " MB Total");
+    tft.setCursor(PX(55), PY(90)); tft.print("SD Card: " + String((unsigned long)sdCardTotal) + " MB Total");
   } else {
     tft.setTextColor(TFT_RED, BG_COLOR);
-    tft.setCursor(PX(55), PY(108)); tft.print("SD Card: Not Mounted");
+    tft.setCursor(PX(55), PY(90)); tft.print("SD Card: Not Mounted");
   }
 
-  tft.fillRoundRect(PX(48), PY(125), PX(130), PY(40), 6, CARD_COLOR);
+  tft.fillRoundRect(PX(48), PY(130), PX(130), PY(38), 6, CARD_COLOR);
   tft.setTextColor(TFT_WHITE, CARD_COLOR); 
   tft.setTextDatum(MC_DATUM);
-  tft.drawString("Edit IP", PX(113), PY(145), 2);
+  tft.drawString("Edit IP", PX(113), PY(149), 2);
 
-  tft.fillRoundRect(PX(184), PY(125), PX(130), PY(40), 6, CARD_COLOR);
-  tft.drawString("Edit Name", PX(249), PY(145), 2);
+  tft.fillRoundRect(PX(184), PY(130), PX(130), PY(38), 6, CARD_COLOR);
+  tft.drawString("Edit Name", PX(249), PY(149), 2);
 
-  tft.fillRoundRect(PX(48), PY(175), PX(130), PY(40), 6, BTN_BLUE); 
+  tft.fillRoundRect(PX(48), PY(175), PX(130), PY(38), 6, BTN_BLUE); 
   tft.setTextColor(TFT_WHITE, BTN_BLUE); 
-  tft.drawString("Calibrate", PX(113), PY(195), 2);
+  tft.drawString("Calibrate", PX(113), PY(194), 2);
 
-  tft.fillRoundRect(PX(184), PY(175), PX(130), PY(40), 6, CARD_COLOR); 
+  tft.fillRoundRect(PX(184), PY(175), PX(130), PY(38), 6, CARD_COLOR); 
   tft.setTextColor(ACCENT_CYAN, CARD_COLOR);
-  tft.drawString("Reset WiFi", PX(249), PY(195), 2);
+  tft.drawString("Reset WiFi", PX(249), PY(194), 2);
   
   tft.setTextDatum(TL_DATUM);
   tft.setTextColor(ACCENT_CYAN, BG_COLOR);
   tft.drawString(String(FW_VERSION) + " Firmware by Nates Print Shop", PX(48), PY(225), 1);
+  
+  updateDynamicUI(); 
 }
 
 void updateDynamicUI() {
@@ -1973,7 +2121,7 @@ void updateDynamicUI() {
   tft.setTextPadding(0);
 
   if (currentTab == 0) {
-    tft.fillRect(PX(48), PY(2), PX(266), PY(18), BG_COLOR);
+    tft.fillRect(PX(48), PY(2), PX(266), PY(21), BG_COLOR); 
     tft.setTextDatum(TL_DATUM);
     tft.setTextColor(TFT_WHITE, BG_COLOR);
     String headerStr = String(printerName) + " : " + currentState;
@@ -1982,31 +2130,31 @@ void updateDynamicUI() {
 
     tft.setTextDatum(MC_DATUM);
 
-    tft.fillRect(PX(50), PY(44), PX(126), PY(30), CARD_COLOR);
+    tft.fillRect(PX(50), PY(47), PX(126), PY(28), CARD_COLOR);
     tft.setTextColor(TFT_WHITE, CARD_COLOR);
-    tft.drawString(String(bedTemp, 1) + "C", PX(113), PY(59), 2);
+    tft.drawString(String(bedTemp, 1) + "C", PX(113), PY(60), 2);
     
-    tft.fillRect(PX(186), PY(44), PX(126), PY(30), CARD_COLOR);
+    tft.fillRect(PX(186), PY(47), PX(126), PY(28), CARD_COLOR);
     tft.setTextColor(ACCENT_CYAN, CARD_COLOR);
     if (activeTool >= 0 && activeTool <= 3) {
-        tft.drawString("Tool " + String(activeTool + 1), PX(249), PY(59), 2);
+        tft.drawString("Tool " + String(activeTool + 1), PX(249), PY(60), 2);
     } else {
         tft.setTextColor(TEXT_GRAY, CARD_COLOR);
-        tft.drawString("None", PX(249), PY(59), 2);
+        tft.drawString("None", PX(249), PY(60), 2);
     }
     
-    tft.fillRect(PX(50), PY(104), PX(126), PY(30), CARD_COLOR);
+    tft.fillRect(PX(50), PY(107), PX(126), PY(28), CARD_COLOR);
     if (activeTool >= 0 && activeTool <= 3) {
         tft.setTextColor(toolTarget[activeTool] > 0 ? tft.color565(255, 120, 120) : TFT_WHITE, CARD_COLOR);
-        tft.drawString(String(toolTemp[activeTool], 1) + "C", PX(113), PY(119), 2);
+        tft.drawString(String(toolTemp[activeTool], 1) + "C", PX(113), PY(120), 2);
     } else {
         tft.setTextColor(TEXT_GRAY, CARD_COLOR);
-        tft.drawString("-- C", PX(113), PY(119), 2);
+        tft.drawString("-- C", PX(113), PY(120), 2);
     }
     
-    tft.fillRect(PX(186), PY(104), PX(126), PY(30), CARD_COLOR);
+    tft.fillRect(PX(186), PY(107), PX(126), PY(28), CARD_COLOR);
     tft.setTextColor(TFT_WHITE, CARD_COLOR);
-    tft.drawString(String(printSpeed) + "% / " + String(fanSpeed) + "%", PX(249), PY(119), 2);
+    tft.drawString(String(printSpeed) + "% / " + String(fanSpeed) + "%", PX(249), PY(120), 2);
 
     tft.fillRect(PX(48), PY(142), PX(266), PY(26), BG_COLOR);
 
@@ -2031,7 +2179,7 @@ void updateDynamicUI() {
     tft.setTextDatum(TL_DATUM); 
   } 
   else if (currentTab == 1) {
-    tft.fillRect(PX(48), PY(2), PX(266), PY(18), BG_COLOR);
+    tft.fillRect(PX(48), PY(2), PX(266), PY(21), BG_COLOR); 
     tft.setTextDatum(TL_DATUM);
     tft.setTextColor(TFT_WHITE, BG_COLOR);
     tft.drawString(String(printerName) + " : " + currentState, PX(48), PY(3), 2);
@@ -2058,6 +2206,67 @@ void updateDynamicUI() {
     }
     tft.setTextDatum(TL_DATUM);
   }
+  else if (currentTab == 4) {
+    // ---> NEW: LIVE ENV DATA ON SETTINGS TAB <---
+#ifdef BOARD_40_INCH
+    if (envMode > 0 && bmeReady) {
+        float tempC = bme.readTemperature();
+        if (!isnan(tempC) && tempC < 100.0 && tempC > -40.0) {
+            float tempV = useFahrenheit ? (tempC * 9.0 / 5.0) + 32.0 : tempC;
+            tempV += tempOffset; 
+            String unitV = useFahrenheit ? "F" : "C";
+            float hum = bme.readHumidity() + humOffset;
+            float pressV = bme.readPressure() / 100.0F;
+
+            String printStatus = "Optimal for Printing";
+            if (hum > 55.0) printStatus = "Poor (Dry Filament!)";
+            else if (tempC < 15.0) printStatus = "Poor (Too Cold!)";
+            else if (tempC > 35.0) printStatus = "Poor (Too Hot!)";
+            else if (hum > 45.0) printStatus = "Fair (Monitor Humid)";
+
+            // Erase the old reading so it doesn't overlap
+            tft.fillRect(PX(52), PY(102), PX(260), PY(24), BG_COLOR); 
+            tft.setTextDatum(TL_DATUM);
+            tft.setTextColor(TEXT_GRAY, BG_COLOR);
+            tft.drawString("Env: " + String(tempV, 1) + unitV + ", " + String(hum, 1) + "% RH, " + String(pressV, 1) + " hPa", PX(55), PY(104), 1);
+            tft.setTextColor(ACCENT_CYAN, BG_COLOR);
+            tft.drawString("Status: " + printStatus, PX(55), PY(116), 1);
+        }
+    }
+#endif
+  }
+
+  // Draw the top bar on every screen (except modals)
+  if (showBattery) {
+      int pct = getBatteryPercentage(getBatteryVoltage());
+      tft.setTextDatum(TR_DATUM);
+      tft.setTextColor(TFT_GREEN, BG_COLOR);
+      tft.setTextPadding(PX(45)); 
+      tft.drawString(String(pct) + "%", PX(314), PY(3), 2);
+      tft.setTextPadding(0);
+  }
+  
+#ifdef BOARD_40_INCH
+  if (envMode == 2 && bmeReady) {
+      float tempC = bme.readTemperature();
+      if (!isnan(tempC) && tempC < 100.0 && tempC > -40.0) {
+          float tempVal = useFahrenheit ? (tempC * 9.0 / 5.0) + 32.0 : tempC;
+          tempVal += tempOffset; 
+          String unitStr = useFahrenheit ? "F" : "C";
+          float hum = bme.readHumidity() + humOffset; 
+          
+          tft.setTextDatum(TR_DATUM);
+          tft.setTextColor(tft.color565(255, 200, 50), BG_COLOR); 
+          tft.setTextPadding(PX(100)); 
+          
+          int envY = showBattery ? PY(15) : PY(3);
+          int envSize = showBattery ? 1 : 2; 
+          tft.drawString(String(tempVal, 1) + unitStr + "  " + String(hum, 0) + "% RH", PX(314), envY, envSize);
+          tft.setTextPadding(0);
+      }
+  }
+#endif
+
 }
 
 void fetchPrinterData() {
@@ -2249,6 +2458,43 @@ void handleTech() {
   html += "<p><b>Wi-Fi Network:</b> " + WiFi.SSID() + "</p>";
   html += "<p><b>Signal Strength:</b> " + String(WiFi.RSSI()) + " dBm</p>";
   html += "<p><b>MAC Address:</b> " + WiFi.macAddress() + "</p>";
+  
+  if (showBattery) {
+      float v = getBatteryVoltage();
+      html += "<p><b>Battery Status:</b> " + String(getBatteryPercentage(v)) + "% (" + String(v, 2) + "V)</p>";
+  } else {
+      html += "<p><b>Battery Status:</b> Disabled</p>";
+  }
+  
+#ifdef BOARD_40_INCH
+  if (envMode > 0) {
+      if (bmeReady) {
+          float tempC = bme.readTemperature();
+          if (isnan(tempC) || tempC > 100.0 || tempC < -40.0) {
+              html += "<p><b>Env Sensor:</b> Error (Connection Lost - Check Wires!)</p>";
+          } else {
+              float tempV = useFahrenheit ? (tempC * 9.0 / 5.0) + 32.0 : tempC;
+              tempV += tempOffset; // Apply User Calibration Offset
+              String unitV = useFahrenheit ? "F" : "C";
+              float hum = bme.readHumidity() + humOffset; // Apply User Calibration Offset
+              float pressV = bme.readPressure() / 100.0F;
+
+              String printStatus = "Optimal for Printing";
+              if (hum > 55.0) printStatus = "Poor (High Humidity - Dry Filament!)";
+              else if (tempC < 15.0) printStatus = "Poor (Too Cold - Risk of Warping)";
+              else if (tempC > 35.0) printStatus = "Poor (Too Hot - Heat Creep Risk)";
+              else if (hum > 45.0) printStatus = "Fair (Monitor Moisture)";
+
+              html += "<p><b>Env Sensor:</b> " + String(tempV, 1) + "&deg;" + unitV + ", " + String(hum, 1) + "% RH, " + String(pressV, 1) + " hPa<br><span style='color:#00E5FF; font-size:14px;'><i>Status: " + printStatus + "</i></span></p>";
+          }
+      } else {
+          html += "<p><b>Env Sensor:</b> Error (Not Detected on Boot)</p>";
+      }
+  } else {
+      html += "<p><b>Env Sensor:</b> Disabled</p>";
+  }
+#endif
+  
   html += "<p><b>Free RAM Heap:</b> " + String(ESP.getFreeHeap() / 1024) + " KB</p>";
   html += "</div>";
 
@@ -2295,6 +2541,35 @@ void handleTech() {
   html += "<option value='0'" + String(currentRot == 0 ? " selected" : "") + ">Portrait</option>";
   html += "<option value='2'" + String(currentRot == 2 ? " selected" : "") + ">Portrait Inverted</option>";
   html += "</select>";
+  
+  html += "<label style='color:#888; font-weight:bold; font-size:12px;'>ENABLE ON-SCREEN BATTERY MONITOR</label><br>";
+  html += "<select name='show_battery'>";
+  html += "<option value='0'" + String(!showBattery ? " selected" : "") + ">Disabled</option>";
+  html += "<option value='1'" + String(showBattery ? " selected" : "") + ">Enabled</option>";
+  html += "</select>";
+
+#ifdef BOARD_40_INCH
+  html += "<label style='color:#888; font-weight:bold; font-size:12px;'>ENABLE BME280 ENV SENSOR</label><br>";
+  html += "<select name='env_mode'>";
+  html += "<option value='0'" + String(envMode == 0 ? " selected" : "") + ">Disabled</option>";
+  html += "<option value='1'" + String(envMode == 1 ? " selected" : "") + ">Web UI Only</option>";
+  html += "<option value='2'" + String(envMode == 2 ? " selected" : "") + ">Web UI + Display Screen</option>";
+  html += "</select>";
+  
+  html += "<label style='color:#888; font-weight:bold; font-size:12px;'>TEMPERATURE UNIT</label><br>";
+  html += "<select name='use_f'>";
+  html += "<option value='0'" + String(!useFahrenheit ? " selected" : "") + ">Celsius (&deg;C)</option>";
+  html += "<option value='1'" + String(useFahrenheit ? " selected" : "") + ">Fahrenheit (&deg;F)</option>";
+  html += "</select>";
+  
+  // ---> NEW: SENSOR CALIBRATION UI <---
+  html += "<hr style='border:1px solid #333; margin:15px 0;'>";
+  html += "<h3 style='color:#00E5FF; margin-top:0;'>Sensor Calibration</h3>";
+  html += "<label style='color:#888; font-weight:bold; font-size:12px;'>TEMP OFFSET (" + String(useFahrenheit ? "&deg;F" : "&deg;C") + ")</label><br>";
+  html += "<input type='number' step='0.1' name='t_off' value='" + String(tempOffset, 1) + "'>";
+  html += "<label style='color:#888; font-weight:bold; font-size:12px;'>HUMIDITY OFFSET (%)</label><br>";
+  html += "<input type='number' step='0.1' name='h_off' value='" + String(humOffset, 1) + "'>";
+#endif
 
   // Theme Customizer Engine
   html += "<hr style='border:1px solid #333; margin:15px 0;'>";
@@ -2387,6 +2662,21 @@ void handleSave() {
   if (server.hasArg("rotation")) {
     int newRot = server.arg("rotation").toInt();
     preferences.putInt("rotation", newRot);
+  }
+  
+  if (server.hasArg("show_battery")) {
+    showBattery = (server.arg("show_battery") == "1");
+    preferences.putBool("showBattery", showBattery);
+  }
+
+  if (server.hasArg("env_mode")) {
+    envMode = server.arg("env_mode").toInt();
+    preferences.putInt("envMode", envMode);
+  }
+
+  if (server.hasArg("use_f")) {
+    useFahrenheit = (server.arg("use_f") == "1");
+    preferences.putBool("useFahrenheit", useFahrenheit);
   }
 
   if (server.hasArg("theme")) {
