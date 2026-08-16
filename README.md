@@ -6,7 +6,7 @@ I built this because I wanted a dedicated, physical screen for my printer withou
 
 * [Waveshare ESP32-S3 4.3inch:](https://amzn.to/4g1MUQd)
 * [Hosyond 2.8" Screen:](https://amzn.to/4fEUpME)
-* [Hosyond 4.0" Screen (Recommended):](https://amzn.to/4hWfHH3)
+* [Hosyond 4.0" Screen:](https://amzn.to/4hWfHH3)
 * [AITRIP CYD 2.8:](https://amzn.to/3UnLPtl)
 
 **By Nate's Print Shop**
