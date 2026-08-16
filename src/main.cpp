@@ -3,8 +3,6 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <SPI.h>
-#include <TFT_eSPI.h> 
-#include <TFT_Touch.h> 
 #include <Preferences.h>
 #include <WiFiManager.h>
 #include <WebServer.h>
@@ -12,56 +10,155 @@
 #include <SD.h>
 #include <FS.h>
 #include <esp_adc_cal.h>
-
-#ifdef BOARD_40_INCH
-#include <Wire.h>
-#include <Adafruit_BME280.h>
-Adafruit_BME280 bme;
-bool bmeReady = false;
-#endif
-
+#include "esp_idf_version.h"
+// --- ADVANCED AUDIO LIBRARY ---
+#include <Audio.h>
 // --- GLOBAL FIRMWARE VERSION ---
-#define FW_VERSION "v2.0.3"
+#define FW_VERSION "v2.0.4"
+// --- AUDIO CONFIGURATION ---
+int currentVolume = 50; 
+bool enableAudio = false; 
 
 // ==========================================
-// --- BOARD SELECTION ---
+// --- BOARD SELECTION & GRAPHICS ---
 // Handled dynamically by platformio.ini!
 // ==========================================
 
-#ifdef BOARD_CYD_28
-  #define TFT_BL 21
-  #define SD_CS 5 
-  #define RTP_DOUT 39
-  #define RTP_DIN  32
-  #define RTP_SCK  25
-  #define RTP_CS   33
-  #define SCREEN_W 320
-  #define SCREEN_H 240
-#elif defined(BOARD_40_INCH)
-  #define TFT_BL 27
-  #define SD_CS   5
-  #define SD_SCK  18
-  #define SD_MISO 19
-  #define SD_MOSI 23
-  #define SCREEN_W 480
-  #define SCREEN_H 320
-  SPIClass sdSPI(VSPI);
+#ifdef BOARD_WAVESHARE_43
+
+  #ifndef CONFIG_IDF_TARGET_ESP32S3
+    #define CONFIG_IDF_TARGET_ESP32S3 1 
+  #endif
+  
+  #define LGFX_USE_V1
+  #include <LovyanGFX.hpp>
+  #include <lgfx/v1/platforms/esp32s3/Panel_RGB.hpp>
+  #include <lgfx/v1/platforms/esp32s3/Bus_RGB.hpp>
+  #include <lgfx/v1/platforms/esp32/Light_CH422G.hpp>
+  #include <Wire.h>
+
+  #define SCREEN_W 800
+  #define SCREEN_H 480
+
+  #define SD_CS   15          
+  #define SD_SCK  12
+  #define SD_MISO 13
+  #define SD_MOSI 11
+  SPIClass sdSPI(FSPI);
+
+  class LGFX : public lgfx::LGFX_Device {
+  public:
+    lgfx::Bus_RGB        _bus_instance;
+    lgfx::Panel_RGB      _panel_instance;
+    lgfx::Light_CH422G   _light_instance;
+    lgfx::Touch_GT911    _touch_instance;
+
+    LGFX(void) {
+      {
+        auto cfg = _panel_instance.config();
+        cfg.memory_width  = 800;
+        cfg.memory_height = 480;
+        cfg.panel_width   = 800;
+        cfg.panel_height  = 480;
+        cfg.offset_x      = 0;
+        cfg.offset_y      = 0;
+        _panel_instance.config(cfg);
+      }
+      {
+        auto cfg = _panel_instance.config_detail();
+        cfg.use_psram = 1;
+        _panel_instance.config_detail(cfg);
+      }
+      {
+        auto cfg = _bus_instance.config();
+        cfg.panel = &_panel_instance;
+        cfg.pin_d0  = 14; cfg.pin_d1  = 38; cfg.pin_d2  = 18; cfg.pin_d3  = 17; cfg.pin_d4  = 10;
+        cfg.pin_d5  = 39; cfg.pin_d6  = 0;  cfg.pin_d7  = 45; cfg.pin_d8  = 48; cfg.pin_d9  = 47; cfg.pin_d10 = 21;
+        cfg.pin_d11 = 1;  cfg.pin_d12 = 2;  cfg.pin_d13 = 42; cfg.pin_d14 = 41; cfg.pin_d15 = 40;
+        cfg.pin_henable = 5; cfg.pin_vsync   = 3; cfg.pin_hsync   = 46; cfg.pin_pclk    = 7;
+        cfg.freq_write  = 16000000;
+        cfg.hsync_polarity    = 0; cfg.hsync_front_porch = 8; cfg.hsync_pulse_width = 4; cfg.hsync_back_porch  = 8;
+        cfg.vsync_polarity    = 0; cfg.vsync_front_porch = 8; cfg.vsync_pulse_width = 4; cfg.vsync_back_porch  = 8;
+        cfg.pclk_idle_high    = 1; cfg.de_idle_high      = 0;
+        _bus_instance.config(cfg);
+      }
+      _panel_instance.setBus(&_bus_instance);
+      {
+        auto cfg = _light_instance.config();
+        cfg.pin_sda     = 8; cfg.pin_scl     = 9; cfg.i2c_port    = 0; cfg.freq        = 400000;
+        cfg.pin_bl      = 2; cfg.shadow_init = (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4); cfg.invert      = false;
+        _light_instance.config(cfg); _panel_instance.setLight(&_light_instance);
+      }
+      {
+        auto cfg = _touch_instance.config();
+        cfg.x_min           = 0; cfg.x_max           = 799; cfg.y_min           = 0; cfg.y_max           = 479;
+        cfg.pin_int         = 4; cfg.bus_shared      = false; cfg.offset_rotation = 0;
+        cfg.i2c_port        = 0; cfg.i2c_addr        = 0x5D; cfg.pin_sda         = 8; cfg.pin_scl         = 9;
+        cfg.freq            = 400000;
+        _touch_instance.config(cfg); _panel_instance.setTouch(&_touch_instance);
+      }
+      setPanel(&_panel_instance);
+    }
+  };
+
+  LGFX tft;
+  #define TEXT_SCALE 2.2f 
+
+#else
+  #include <SD.h> 
+  #include <TFT_eSPI.h> 
+  TFT_eSPI tft = TFT_eSPI();
+  #define TEXT_SCALE 1.0f 
+
+  #ifdef BOARD_CYD_28
+    #include <TFT_Touch.h> 
+    #define TFT_BL 21
+    #define SD_CS 5 
+    #define RTP_DOUT 39
+    #define RTP_DIN  32
+    #define RTP_SCK  25
+    #define RTP_CS   33
+    #define SCREEN_W 320
+    #define SCREEN_H 240
+    TFT_Touch touch = TFT_Touch(RTP_CS, RTP_SCK, RTP_DIN, RTP_DOUT);
+  #elif defined(BOARD_40_INCH)
+    #include <Wire.h>
+    #define TFT_BL 27
+    #define SD_CS   5
+    #define SD_SCK  18
+    #define SD_MISO 19
+    #define SD_MOSI 23
+    #define SCREEN_W 480
+    #define SCREEN_H 320
+    SPIClass sdSPI(VSPI);
+  #endif
 #endif
 
-// --- DYNAMIC SCALING MACROS ---
+// ---> Activate BME280 inclusion <---
+#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
+  #include <Wire.h>
+  #include <Adafruit_BME280.h>
+  Adafruit_BME280 bme;
+  bool bmeReady = false;
+  int bmeSDA = 32; 
+  int bmeSCL = 25; 
+
+  bool pingBME() {
+    // Standard library ping without overriding the Wire pins
+    if (bme.begin(0x76, &Wire) || bme.begin(0x77, &Wire)) {
+    bme.setSampling(Adafruit_BME280::MODE_NORMAL, Adafruit_BME280::SAMPLING_X2, Adafruit_BME280::SAMPLING_X16, Adafruit_BME280::SAMPLING_X1, Adafruit_BME280::FILTER_X16, Adafruit_BME280::STANDBY_MS_500);
+    return true;
+  }
+    return false;
+  }
+#endif
+
 #define PX(x) ((x) * SCREEN_W / 320)
 #define PY(y) ((y) * SCREEN_H / 240)
-
-TFT_eSPI tft = TFT_eSPI();
-
-#ifdef BOARD_CYD_28
-TFT_Touch touch = TFT_Touch(RTP_CS, RTP_SCK, RTP_DIN, RTP_DOUT);
-#endif
 
 Preferences preferences;
 WebServer server(80);
 
-// --- DYNAMIC SETTINGS ---
 char printerIP[32] = "192.168.1.100"; 
 char printerName[32] = "Snapmaker U1"; 
 char mdnsName[32] = "u1-display"; 
@@ -72,12 +169,11 @@ uint64_t sdCardUsed = 0;
 bool invertDisplay = false; 
 unsigned long blockSyncUntil = 0; 
 bool showBattery = false; 
-int envMode = 0; // 0=Disabled, 1=Web Only, 2=Web+Screen
+int envMode = 0; 
 bool useFahrenheit = false; 
-float tempOffset = 0.0; // Calibration Offset
-float humOffset = 0.0;  // Calibration Offset
+float tempOffset = 0.0; 
+float humOffset = 0.0;  
 
-// --- STATE VARIABLES ---
 unsigned long lastUpdate = 0;
 const int updateInterval = 2000;
 String currentState = "Offline";
@@ -87,6 +183,7 @@ float toolTemp[4] = {0,0,0,0};
 float toolTarget[4] = {0,0,0,0};
 int printSpeed = 100, fanSpeed = 0;
 float printProgress = 0.0;
+int printDuration = 0; 
 int activeTool = -1;
 float moveDist = 10.0; 
 
@@ -172,6 +269,7 @@ void updateDynamicUI();
 void fetchPrinterData();
 void sendGcode(String command);
 void handleRoot();
+void handleAudio();
 void handleTech();
 void handleSave();
 void handleSaveFilament();
@@ -188,18 +286,64 @@ void applyTheme();
 float getBatteryVoltage();
 int getBatteryPercentage(float volts);
 
+// ==========================================
+// --- I2S ESP8266Audio ASYNC PLAYER ---
+// ==========================================
+#ifdef BOARD_WAVESHARE_43
+  Audio audio; // Standard I2S routing for ESP32-S3
+#else
+  Audio audio(true, I2S_DAC_CHANNEL_LEFT_EN); // Standard CYD 4.0 onboard DAC routing
+  #define AUDIO_EN_PIN 4
+#endif
+
+enum : uint8_t { CMD_SET_VOLUME, CMD_PLAY_FILE, CMD_STOP_AUDIO };
+struct audioMessage {
+  uint8_t cmd;
+  char txt[128];
+  uint32_t value;
+};
+QueueHandle_t audioQueue = NULL;
+
+void audioTask(void *parameter) {
+  audioQueue = xQueueCreate(10, sizeof(struct audioMessage));
+  audioMessage msg;
+
+#ifndef BOARD_WAVESHARE_43
+  // Hard enable the CYD onboard amplifier
+  pinMode(AUDIO_EN_PIN, OUTPUT);
+  digitalWrite(AUDIO_EN_PIN, LOW);
+#endif
+
+  // The library expects volume from 0 to 21.
+  int mappedVol = (currentVolume * 21) / 100;
+  audio.setVolume(mappedVol);
+
+  while(true) {
+     if (xQueueReceive(audioQueue, &msg, 1) == pdPASS) {
+        if (msg.cmd == CMD_SET_VOLUME) {
+           int libVol = (msg.value * 21) / 100;
+           audio.setVolume(libVol);
+        } else if (msg.cmd == CMD_PLAY_FILE) {
+           audio.stopSong();
+           audio.connecttoFS(SD, msg.txt);
+        } else if (msg.cmd == CMD_STOP_AUDIO) {
+           audio.stopSong();
+        }
+     }
+     audio.loop();
+  }
+}
+
 // --- BATTERY HELPER FUNCTIONS ---
 #define PIN_BAT_ADC 34
 float getBatteryVoltage() {
   esp_adc_cal_characteristics_t adc_chars;
   esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_12, ADC_WIDTH_BIT_12, 1100, &adc_chars);
-  
   uint32_t raw_sum = 0;
   for(int i = 0; i < 20; i++) {
     raw_sum += analogRead(PIN_BAT_ADC);
   }
   uint32_t raw = raw_sum / 20;
-  
   uint32_t mv = esp_adc_cal_raw_to_voltage(raw, &adc_chars) * 2; 
   return mv / 1000.0f;
 }
@@ -210,7 +354,6 @@ int getBatteryPercentage(float volts) {
   int pct = (int)((volts - 3.3f) / (4.15f - 3.3f) * 100.0f);
   return constrain(pct, 0, 100);
 }
-// --------------------------------
 
 uint16_t hexToRGB565(String hex) {
   if (hex.startsWith("#")) hex.remove(0, 1);
@@ -315,9 +458,16 @@ void drawBootLogo() {
   tft.drawLine(SCREEN_W - 10, SCREEN_H - 40, SCREEN_W - 30, SCREEN_H - 40, ACCENT_CYAN);
   tft.drawLine(SCREEN_W - 30, SCREEN_H - 40, SCREEN_W - 40, SCREEN_H - 30, ACCENT_CYAN);
   tft.drawLine(SCREEN_W - 40, SCREEN_H - 30, SCREEN_W - 100, SCREEN_H - 30, ACCENT_CYAN);
+  
   tft.setTextColor(ACCENT_CYAN);
   tft.setTextDatum(MC_DATUM);
+  
+#ifdef BOARD_WAVESHARE_43
+  tft.drawString("ADVANCED", SCREEN_W/2, PY(90), 4); 
+#else
   tft.drawString("CYD", SCREEN_W/2, PY(90), 4); 
+#endif
+
   tft.setTextColor(TFT_WHITE);
   tft.drawString("SNAPMAKER U1 SCREEN", SCREEN_W/2, PY(130), 2);
   tft.setTextColor(ACCENT_CYAN);
@@ -349,7 +499,7 @@ bool getTouchCoord(int &x, int &y) {
     return true;
   }
   return false;
-#elif defined(BOARD_40_INCH)
+#elif defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
   uint16_t ux = 0, uy = 0;
   if (tft.getTouch(&ux, &uy)) {
     x = ux;
@@ -711,19 +861,27 @@ void launchPatchedPrint(String filename, int source, bool bBed, bool bTime, bool
 void setup() {
   Serial.begin(115200);
 
-  // Initializing LCD
+#ifndef BOARD_WAVESHARE_43
   pinMode(TFT_BL, OUTPUT);
   digitalWrite(TFT_BL, HIGH);
+#endif
+
   tft.init();
 
   preferences.begin("u1_config", false);
   
-  // Dynamic rotation check (defaults to 3 for standard landscape)
   int screenRotation = preferences.getInt("rotation", 3);
+  
+#ifdef BOARD_WAVESHARE_43
+  if (screenRotation == 3) screenRotation = 0; 
+#endif
+
   tft.setRotation(screenRotation);
 
+#ifndef BOARD_WAVESHARE_43
   invertDisplay = preferences.getBool("invertDisplay", false);
   tft.invertDisplay(invertDisplay);
+#endif
 
   currentTheme = preferences.getInt("theme", 0);
   customBG = preferences.getString("customBG", customBG);
@@ -735,12 +893,34 @@ void setup() {
   showBattery = preferences.getBool("showBattery", false); 
   envMode = preferences.getInt("envMode", 0); 
   useFahrenheit = preferences.getBool("useFahrenheit", false); 
-  tempOffset = preferences.getFloat("tempOffset", 0.0); // Load Temp Offset
-  humOffset = preferences.getFloat("humOffset", 0.0);   // Load Humidity Offset
+  tempOffset = preferences.getFloat("tempOffset", 0.0); 
+  humOffset = preferences.getFloat("humOffset", 0.0);   
+  enableAudio = preferences.getBool("enableAudio", false);
   
-  applyTheme();
+// Initialize the BME280 Environment Sensor for the larger boards
+  #if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
+    #ifdef BOARD_WAVESHARE_43
+      Wire.begin(8, 9); // Native ESP32-S3 I2C Pins for Waveshare
+    #else
+      // IGNORE saved memory and aggressively hardcode the correct 4.0-inch pins!
+      bmeSDA = 32;
+      bmeSCL = 25;
+      Wire.begin(bmeSDA, bmeSCL); 
+    #endif
+    
+    // Retry connecting up to 4 times at boot to ensure it wakes up
+    for (int i = 0; i < 4; i++) {
+      delay(500); 
+      if (pingBME()) {
+        bmeReady = true;
+        Serial.println("BME280 connected successfully at boot!");
+        break; 
+      }
+    }
+  #endif
 
-  tft.setTextSize(1); 
+  applyTheme();
+  tft.setTextSize(TEXT_SCALE); 
   drawBootLogo();
 
 #ifdef BOARD_CYD_28
@@ -761,23 +941,29 @@ void setup() {
     sdCardUsed = SD.usedBytes() / (1024 * 1024);
     loadFilesFromSD();
   }
-  
-  // Initialize the BME280 Environment Sensor if attached to the I2C port
-  Wire.begin(32, 25);
-  if (bme.begin(0x77) || bme.begin(0x76)) {
-    bmeReady = true;
-    bme.setSampling(Adafruit_BME280::MODE_NORMAL,
-                    Adafruit_BME280::SAMPLING_X2,  // temp
-                    Adafruit_BME280::SAMPLING_X16, // pressure
-                    Adafruit_BME280::SAMPLING_X1,  // humidity
-                    Adafruit_BME280::FILTER_X16,
-                    Adafruit_BME280::STANDBY_MS_500);
+#elif defined(BOARD_WAVESHARE_43)
+  isCalibrated = true; 
+  sdSPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+  tft._light_instance.write_pin(4, false);
+  delay(20);
+
+  if (SD.begin(SD_CS, sdSPI, 25000000)) {
+    sdCardReady = true;
+    sdCardTotal = SD.totalBytes() / (1024 * 1024);
+    sdCardUsed  = SD.usedBytes()  / (1024 * 1024);
+    loadFilesFromSD();
+    Serial.println("SD Card OK");
   } else {
-    Serial.println("BME280 not found on I2C port!");
+    Serial.println("SD Card Failed");
+    sdCardReady = false;
   }
 #endif
 
-  // Generate unique network identifier using chip MAC address
+  // INIT AUDIO TASK (Runs exclusively in the background on Core 0)
+  if (enableAudio && sdCardReady) {
+      xTaskCreatePinnedToCore(audioTask, "AudioTask", 8192, NULL, 1, NULL, 0);
+  }
+
   String macSuffix = WiFi.macAddress();
   macSuffix.replace(":", "");
   macSuffix = macSuffix.substring(macSuffix.length() - 4);
@@ -880,21 +1066,84 @@ void setup() {
     preferences.putString("printer_name", printerName);
   }
 
-  // mDNS initialization with explicit HTTP service broadcast
   if (MDNS.begin(mdnsName)) {
     MDNS.addService("http", "tcp", 80);
     Serial.println("mDNS started");
   }
   
   server.on("/", HTTP_GET, handleRoot);
+  server.on("/audio", HTTP_GET, handleAudio);
   server.on("/tech", HTTP_GET, handleTech);
   server.on("/save", HTTP_POST, handleSave);
   server.on("/save_fil", HTTP_POST, handleSaveFilament);
   server.on("/control", HTTP_POST, handleControl);
   server.on("/calibrate", HTTP_GET, handleCalibrateWeb);
   
+  server.on("/setup_sd", HTTP_GET, []() {
+      if (sdCardReady) {
+          if (!SD.exists("/dump_zone")) SD.mkdir("/dump_zone");
+          showToast("SD Setup", "Required folders created!");
+      } else {
+          showToast("Error", "SD Card not found!", true);
+      }
+      server.sendHeader("Location", "/tech", true);
+      server.send(302, "text/plain", "");
+  });
+
+  server.on("/vol_up", HTTP_GET, []() {
+      currentVolume += 10;
+      if (currentVolume > 100) currentVolume = 100;
+      if (enableAudio && audioQueue != NULL) {
+          audioMessage msg;
+          msg.cmd = CMD_SET_VOLUME;
+          msg.value = currentVolume;
+          xQueueSend(audioQueue, &msg, portMAX_DELAY);
+      }
+      server.sendHeader("Location", "/audio", true);
+      server.send(302, "text/plain", "");
+  });
+  
+  server.on("/vol_down", HTTP_GET, []() {
+      currentVolume -= 10;
+      if (currentVolume < 0) currentVolume = 0;
+      if (enableAudio && audioQueue != NULL) {
+          audioMessage msg;
+          msg.cmd = CMD_SET_VOLUME;
+          msg.value = currentVolume;
+          xQueueSend(audioQueue, &msg, portMAX_DELAY);
+      }
+      server.sendHeader("Location", "/audio", true);
+      server.send(302, "text/plain", "");
+  });
+  
+  server.on("/play_sound", HTTP_GET, []() {
+      if(server.hasArg("file") && enableAudio && audioQueue != NULL) {
+          audioMessage msg;
+          msg.cmd = CMD_PLAY_FILE;
+          strlcpy(msg.txt, server.arg("file").c_str(), sizeof(msg.txt));
+          xQueueSend(audioQueue, &msg, portMAX_DELAY);
+      }
+      server.sendHeader("Location", "/audio", true);
+      server.send(302, "text/plain", "");
+  });
+
+  server.on("/stop_sound", HTTP_GET, []() {
+      if (enableAudio && audioQueue != NULL) {
+          audioMessage msg;
+          msg.cmd = CMD_STOP_AUDIO;
+          xQueueSend(audioQueue, &msg, portMAX_DELAY);
+      }
+      server.sendHeader("Location", "/audio", true);
+      server.send(302, "text/plain", "");
+  });
+
   server.on("/upload", HTTP_POST, []() {
     server.sendHeader("Location", "/tech", true);
+    server.send(302, "text/plain", "");
+  }, handleFileUpload);
+
+  server.on("/upload_audio", HTTP_POST, []() {
+    server.sendHeader("Location", "/audio", true);
     server.send(302, "text/plain", "");
   }, handleFileUpload);
 
@@ -915,13 +1164,10 @@ void loop() {
 
   int touchX = 0, touchY = 0;
   if (getTouchCoord(touchX, touchY)) {
-    
-    // --- NEW: BLOCK ALL TOUCHES WHILE TOAST IS ACTIVE ---
+
     if (toastExpireTime > 0) {
         lastTouchTime = millis();
     }
-    // ----------------------------------------------------
-    
     else if (millis() - lastTouchTime > 250) { 
       bool modalForceClosed = false;
 
@@ -936,7 +1182,6 @@ void loop() {
         int targetTool = 0;
         bool handledTouch = false;
         
-        // ---> MASSIVE FORGIVING HITBOXES FOR TEMPERATURES <---
         if (activeModal == 1 || activeModal == 2) {
           if (touchY > PY(30)) {
               int r = 0;
@@ -961,7 +1206,6 @@ void loop() {
               closedModal = true; handledTouch = true;
           } else { closedModal = true; }
         } 
-        // ---> MASSIVE FORGIVING HITBOXES FOR SPEED/FAN <---
         else if (activeModal == 7) {
           if (touchY > PY(35) && touchY < PY(115)) {
               int c = 0;
@@ -983,7 +1227,6 @@ void loop() {
               closedModal = true; handledTouch = true; 
           } else { closedModal = true; }
         }
-        // ---> MASSIVE FORGIVING HITBOXES FOR ACTIVE TOOL <---
         else if (activeModal == 8) {
           if (touchY > PY(35) && touchY < PY(160)) {
               int r = (touchY > PY(100)) ? 1 : 0;
@@ -1001,7 +1244,6 @@ void loop() {
               closedModal = true; handledTouch = true;
           } else { closedModal = true; }
         }
-        // ---> MASSIVE FORGIVING HITBOXES FOR TOOL MODAL <---
         else if (activeModal >= 10 && activeModal <= 13) {
           int tIdx = activeModal - 10;
           handledTouch = true; 
@@ -1018,7 +1260,7 @@ void loop() {
             else { sendGcode("M104 T" + String(tIdx) + " S240"); showToast("Heating", "Tool " + String(tIdx+1) + " to 240C"); }
           }
           else if (touchY >= PY(82) && touchY < PY(132)) {
-            if (touchX < PX(160)) { // Perfect center split
+            if (touchX < PX(160)) { 
               int dummyX, dummyY;
               while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
               activeModal = 60 + tIdx; 
@@ -1040,7 +1282,7 @@ void loop() {
             String pickCmd = (tIdx == 0) ? "pick_extruder" : "pick_extruder" + String(tIdx);
             String parkCmd = (tIdx == 0) ? "park_extruder" : "park_extruder" + String(tIdx);
 
-            if (touchX < PX(160)) { // Perfect center split
+            if (touchX < PX(160)) { 
               if (toolAttached[tIdx]) { sendGcode(parkCmd); showToast("Tool", "Parking..."); }
               else { sendGcode(pickCmd); showToast("Tool", "Attaching T" + String(tIdx+1)); }
               toolAttached[tIdx] = !toolAttached[tIdx];
@@ -1176,7 +1418,6 @@ void loop() {
               }
           }
         }
-        // ---> MASSIVE FORGIVING HITBOXES FOR FILAMENT GRID <---
         else if (activeModal >= 60 && activeModal <= 63) {
           int tIdx = activeModal - 60;
           handledTouch = true;
@@ -1214,7 +1455,6 @@ void loop() {
               }
           }
         }
-        // ---> MASSIVE FORGIVING HITBOXES FOR COLOR PICKER <---
         else if (activeModal >= 30 && activeModal <= 33) {
           int tIdx = activeModal - 30;
           if (touchY >= PY(35) && touchY < PY(150)) {
@@ -1329,11 +1569,13 @@ void loop() {
         else if (touchX > PX(48) && touchX < PX(178) && touchY > PY(82) && touchY < PY(136)) { activeModal = 2; drawTempModal(2); }
         else if (touchX > PX(184) && touchX < PX(314) && touchY > PY(82) && touchY < PY(136)) { activeModal = 7; drawSpeedFanModal(); }
         
-        else if (touchX > PX(48) && touchX < PX(178) && touchY > PY(174) && touchY < PY(226)) {
+        else if (touchX > PX(48) && touchX < PX(132) && touchY > PY(174) && touchY < PY(226)) {
           if (currentState == "paused") { sendGcode("RESUME"); showToast("Command", "Resuming print..."); }
           else { sendGcode("PAUSE"); showToast("Command", "Pausing print..."); }
         }
-        else if (touchX > PX(184) && touchX < PX(314) && touchY > PY(174) && touchY < PY(226)) { sendGcode("CANCEL_PRINT"); showToast("Command", "Cancelling print...", true); }
+        else if (touchX > PX(138) && touchX < PX(222) && touchY > PY(174) && touchY < PY(226)) { 
+          sendGcode("CANCEL_PRINT"); showToast("Command", "Cancelling print...", true); 
+        }
       }
       else if (currentTab == 1) {
         for (int i=0; i<4; i++) {
@@ -1366,7 +1608,6 @@ void loop() {
       }
       else if (currentTab == 3) {
         if (touchY < PY(40)) {
-            // ---> UPDATED TOUCH ZONES FOR SMALLER BUTTONS <---
             if (touchX > PX(45) && touchX < PX(140) && printTabSource != 0) { 
                 printTabSource = 0; fileScrollIndex = 0; fetchKlipperFiles(); drawPrintTab(); 
                 showToast("File Source", "Loaded Printer Klipper Files");
@@ -1417,10 +1658,16 @@ void loop() {
             lastTouchTime = millis();
         }
         else if (touchX > PX(48) && touchX < PX(178) && touchY > PY(175) && touchY < PY(215)) {
+#ifndef BOARD_WAVESHARE_43
           touchCalibrate();
           tft.fillScreen(BG_COLOR);
           drawSidebar();
           drawSettingsTab();
+#else
+          showToast("Info", "Capacitive screens auto-calibrate!");
+          forceRedrawForToast = true;
+          lastTouchTime = millis();
+#endif
         }
         else if (touchX > PX(184) && touchX < PX(314) && touchY > PY(175) && touchY < PY(215)) {
           tft.fillScreen(BG_COLOR);
@@ -1595,14 +1842,19 @@ void touchCalibrate() {
   tft.setTextDatum(TL_DATUM);
   delay(1200);
 
+#elif defined(BOARD_WAVESHARE_43)
+  // Capacitive Touch doesn't need physical calibration!
+  isCalibrated = true;
+  return;
 #endif
 }
 
 void drawSidebar() {
   tft.fillRect(0, 0, PX(42), SCREEN_H, SIDEBAR_COLOR);
-  tft.setTextSize(1);
-  int stepY = SCREEN_H / 5;
-  for (int i = 0; i < 5; i++) {
+  tft.setTextSize(TEXT_SCALE);
+  int numTabs = 5;
+  int stepY = SCREEN_H / numTabs;
+  for (int i = 0; i < numTabs; i++) {
     int y = i * stepY;
     if (i == currentTab) {
       tft.fillRect(0, y, PX(4), stepY, ACCENT_CYAN); 
@@ -1621,7 +1873,7 @@ void drawSidebar() {
 
 void drawHomeTab() {
   tft.fillRect(PX(42), 0, SCREEN_W - PX(42), SCREEN_H, BG_COLOR);
-  tft.setTextSize(1);
+  tft.setTextSize(TEXT_SCALE);
 
   tft.fillRoundRect(PX(48), PY(25), PX(130), PY(52), 6, CARD_COLOR);
   tft.drawRoundRect(PX(48), PY(25), PX(130), PY(52), 6, tft.color565(50, 55, 65));
@@ -1972,7 +2224,7 @@ void drawPrintOptionsModal() {
 
 void drawToolheadTab() {
   tft.fillRect(PX(42), 0, SCREEN_W - PX(42), SCREEN_H, BG_COLOR);
-  tft.setTextSize(1);
+  tft.setTextSize(TEXT_SCALE);
   tft.setTextDatum(TL_DATUM);
   
   for (int i = 0; i < 4; i++) {
@@ -1984,7 +2236,7 @@ void drawToolheadTab() {
 
 void drawMoveTab() {
   tft.fillRect(PX(42), 0, SCREEN_W - PX(42), SCREEN_H, BG_COLOR);
-  tft.setTextSize(1); tft.setTextColor(TFT_WHITE, BG_COLOR);
+  tft.setTextSize(TEXT_SCALE); tft.setTextColor(TFT_WHITE, BG_COLOR);
   tft.setCursor(PX(55), PY(5)); tft.print("Move & Home");
 
   String distLabels[] = {"0.1", "1", "10", "50"};
@@ -2020,7 +2272,7 @@ void drawMoveTab() {
 void drawPrintTab() {
   tft.fillRect(PX(42), 0, SCREEN_W - PX(42), SCREEN_H, BG_COLOR);
   tft.setTextDatum(TL_DATUM); 
-  tft.setTextSize(1);
+  tft.setTextSize(TEXT_SCALE);
   tft.setTextColor(TFT_WHITE, BG_COLOR);
 
   int btnW = PX(85);
@@ -2070,13 +2322,12 @@ void drawPrintTab() {
 
 void drawSettingsTab() {
   tft.fillRect(PX(42), 0, SCREEN_W - PX(42), SCREEN_H, BG_COLOR);
-  tft.setTextSize(1);
+  tft.setTextSize(TEXT_SCALE);
   tft.setTextColor(TFT_WHITE, BG_COLOR);
   tft.drawString("SYS_CONFIG", PX(55), PY(6), 2);
 
   tft.setTextColor(TEXT_GRAY, BG_COLOR);
   
-  // ---> NEW: SHIFTED UP TO MAKE ROOM FOR ENV SENSOR <---
   tft.setCursor(PX(55), PY(25));  tft.print("Printer IP: " + String(printerIP));
   tft.setCursor(PX(55), PY(38));  tft.print("WiFi: " + WiFi.SSID() + " (" + String(WiFi.RSSI()) + "dBm)");
   tft.setCursor(PX(55), PY(51));  tft.print("Display IP: " + WiFi.localIP().toString());
@@ -2117,7 +2368,7 @@ void drawSettingsTab() {
 void updateDynamicUI() {
   if (activeModal > 0) return; 
 
-  tft.setTextSize(1);
+  tft.setTextSize(TEXT_SCALE);
   tft.setTextPadding(0);
 
   if (currentTab == 0) {
@@ -2167,7 +2418,10 @@ void updateDynamicUI() {
     tft.drawString(shortFile, PX(48), PY(142), 1);
     
     tft.setTextDatum(TR_DATUM);
-    tft.drawString(String(printProgress, 1) + "%", PX(314), PY(142), 1);
+    int p_hours = printDuration / 3600;
+    int p_mins = (printDuration % 3600) / 60;
+    String timeStr = String(p_hours) + "h " + String(p_mins) + "m";
+    tft.drawString(timeStr, PX(314), PY(142), 1);
 
     int barWidth = PX(266);
     int fillWidth = (int)((printProgress / 100.0) * barWidth);
@@ -2207,30 +2461,43 @@ void updateDynamicUI() {
     tft.setTextDatum(TL_DATUM);
   }
   else if (currentTab == 4) {
-    // ---> NEW: LIVE ENV DATA ON SETTINGS TAB <---
-#ifdef BOARD_40_INCH
-    if (envMode > 0 && bmeReady) {
-        float tempC = bme.readTemperature();
-        if (!isnan(tempC) && tempC < 100.0 && tempC > -40.0) {
-            float tempV = useFahrenheit ? (tempC * 9.0 / 5.0) + 32.0 : tempC;
-            tempV += tempOffset; 
-            String unitV = useFahrenheit ? "F" : "C";
-            float hum = bme.readHumidity() + humOffset;
-            float pressV = bme.readPressure() / 100.0F;
+#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
+    if (envMode > 0) {
+        if (!bmeReady) {
+            static unsigned long lastBmePing = 0;
+            if (millis() - lastBmePing > 5000) {
+                lastBmePing = millis();
+                
+            }
+        }
 
-            String printStatus = "Optimal for Printing";
-            if (hum > 55.0) printStatus = "Poor (Dry Filament!)";
-            else if (tempC < 15.0) printStatus = "Poor (Too Cold!)";
-            else if (tempC > 35.0) printStatus = "Poor (Too Hot!)";
-            else if (hum > 45.0) printStatus = "Fair (Monitor Humid)";
+        if (bmeReady) {
+            float tempC = bme.readTemperature();
+            if (!isnan(tempC) && tempC < 100.0 && tempC > -40.0) {
+                float tempV = useFahrenheit ? (tempC * 9.0 / 5.0) + 32.0 : tempC;
+                tempV += tempOffset; 
+                String unitV = useFahrenheit ? "F" : "C";
+                float hum = bme.readHumidity() + humOffset;
+                float pressV = bme.readPressure() / 100.0F;
 
-            // Erase the old reading so it doesn't overlap
+                String printStatus = "Optimal for Printing";
+                if (hum > 55.0) printStatus = "Poor (Dry Filament!)";
+                else if (tempC < 15.0) printStatus = "Poor (Too Cold!)";
+                else if (tempC > 35.0) printStatus = "Poor (Too Hot!)";
+                else if (hum > 45.0) printStatus = "Fair (Monitor Humid)";
+
+                tft.fillRect(PX(52), PY(102), PX(260), PY(24), BG_COLOR); 
+                tft.setTextDatum(TL_DATUM);
+                tft.setTextColor(TEXT_GRAY, BG_COLOR);
+                tft.drawString("Env: " + String(tempV, 1) + unitV + ", " + String(hum, 1) + "% RH, " + String(pressV, 1) + " hPa", PX(55), PY(104), 1);
+                tft.setTextColor(ACCENT_CYAN, BG_COLOR);
+                tft.drawString("Status: " + printStatus, PX(55), PY(116), 1);
+            }
+        } else {
             tft.fillRect(PX(52), PY(102), PX(260), PY(24), BG_COLOR); 
             tft.setTextDatum(TL_DATUM);
-            tft.setTextColor(TEXT_GRAY, BG_COLOR);
-            tft.drawString("Env: " + String(tempV, 1) + unitV + ", " + String(hum, 1) + "% RH, " + String(pressV, 1) + " hPa", PX(55), PY(104), 1);
-            tft.setTextColor(ACCENT_CYAN, BG_COLOR);
-            tft.drawString("Status: " + printStatus, PX(55), PY(116), 1);
+            tft.setTextColor(tft.color565(255, 180, 180), BG_COLOR);
+            tft.drawString("Env Sensor: Scanning for BME280...", PX(55), PY(104), 1);
         }
     }
 #endif
@@ -2246,7 +2513,7 @@ void updateDynamicUI() {
       tft.setTextPadding(0);
   }
   
-#ifdef BOARD_40_INCH
+#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
   if (envMode == 2 && bmeReady) {
       float tempC = bme.readTemperature();
       if (!isnan(tempC) && tempC < 100.0 && tempC > -40.0) {
@@ -2304,6 +2571,8 @@ void fetchPrinterData() {
       fanSpeed = status["fan"]["speed"].as<float>() * 100.0;
       printProgress = status["display_status"]["progress"].as<float>() * 100.0;
       
+      printDuration = status["print_stats"]["print_duration"].as<int>();
+      
       String tHead = status["toolhead"]["extruder"].as<String>();
       if(tHead == "extruder") activeTool = 0;
       else if(tHead == "extruder1") activeTool = 1;
@@ -2311,7 +2580,6 @@ void fetchPrinterData() {
       else if(tHead == "extruder3") activeTool = 3;
       else activeTool = -1;
 
-      // PULL LIVE FILAMENT COLORS AND TYPES FROM KLIPPER
       JsonObject taskConfig = status["print_task_config"];
       if (!taskConfig.isNull()) {
         JsonArray types = taskConfig["filament_type"];
@@ -2372,7 +2640,7 @@ String getWebHeader(String activePage) {
   html += ".stat div { font-size: 24px; font-weight: bold; margin-top: 8px; color: #00E5FF; font-family: 'Courier New', Courier, monospace; } ";
   html += ".stat.clickable:hover { border-color: #00E5FF; background: #2A3B5C; cursor: pointer; } ";
   html += "input[type=text], input[type=password], input[type=number], select { width: 100%; padding: 12px; margin: 8px 0 16px; box-sizing: border-box; background: #1a1d24; border: 1px solid #333; color: white; border-radius: 6px; } ";
-  html += ".btn { width: 100%; padding: 14px; background: #00E5FF; color: black; border: none; border-radius: 6px; font-weight: bold; font-size: 16px; cursor: pointer; display: block; box-sizing: border-box; text-align: center; text-decoration: none; } ";
+  html += ".btn { width: 100%; padding: 14px; background: #00E5FF; color: black; border: none; border-radius: 6px; font-weight: bold; font-size: 16px; cursor: display: block; box-sizing: border-box; text-align: center; text-decoration: none; } ";
   html += "</style>";
   html += "<script>";
   html += "function sc(cmd, pmt) { let v = prompt(pmt); if(v !== null && v !== '') { document.getElementById('c_param').name = cmd; document.getElementById('c_param').value = v; document.getElementById('c_form').submit(); } }";
@@ -2382,7 +2650,12 @@ String getWebHeader(String activePage) {
   
   html += "<h2 style='text-align:center; color:#00E5FF; text-transform:uppercase; letter-spacing:2px; font-family:monospace; margin-bottom:25px;'>U1 Command Terminal</h2><div class='nav'>";
   html += "<a href='/' class='" + String(activePage == "home" ? "active" : "") + "'>Dashboard</a>";
-  html += "<a href='/tech' class='" + String(activePage == "tech" ? "active" : "") + "'>Hardware Diags</a></div>";
+  
+  if (enableAudio) {
+      html += "<a href='/audio' class='" + String(activePage == "audio" ? "active" : "") + "'>Audio Player</a>";
+  }
+  
+  html += "<a href='/tech' class='" + String(activePage == "tech" ? "active" : "") + "'>Hardware & Config</a></div>";
   return html;
 }
 
@@ -2425,10 +2698,69 @@ void handleRoot() {
   server.send(200, "text/html", html);
 }
 
+void handleAudio() {
+  if (!enableAudio) {
+      server.sendHeader("Location", "/tech", true);
+      server.send(302, "text/plain", "");
+      return;
+  }
+  
+  String html = getWebHeader("audio");
+
+  html += "<div class='card'><h3 style='margin-top:0;'>Speaker Controls</h3>";
+  html += "<p style='color:#888; font-weight:bold;'>Volume Level: " + String(currentVolume) + "%</p>";
+  html += "<div class='grid'>";
+  html += "<a href='/vol_down' class='btn' style='background:#503232; color:white;'>Volume Down</a>";
+  html += "<a href='/vol_up' class='btn' style='background:#325032; color:white;'>Volume Up</a>";
+  html += "</div>";
+  html += "<a href='/stop_sound' class='btn' style='background:#b30000; color:white; margin-top:15px;'>Stop Audio</a>";
+  html += "</div>";
+
+  html += "<div class='card'><h3 style='margin-top:0;'>SD Card Audio Playlist</h3>";
+  if (sdCardReady) {
+      File root = SD.open("/");
+      File file = root.openNextFile();
+      bool foundAudio = false;
+      while(file) {
+          String fn = String(file.name());
+          // Scan for all standard Audio formats supported by the library
+          if(!file.isDirectory() && (fn.endsWith(".wav") || fn.endsWith(".WAV") || fn.endsWith(".mp3") || fn.endsWith(".MP3") || fn.endsWith(".m4a"))) {
+              foundAudio = true;
+              if(!fn.startsWith("/")) fn = "/" + fn;
+              html += "<div style='display:flex; justify-content:space-between; align-items:center; padding:10px; border-bottom:1px solid #333;'>";
+              html += "<span style='color:white;'>" + fn + "</span>";
+              html += "<a href='/play_sound?file=" + urlEncode(fn) + "' class='btn' style='width:auto; padding:8px 20px; margin:0;'>Play</a>";
+              html += "</div>";
+          }
+          file = root.openNextFile();
+      }
+      if (!foundAudio) {
+          html += "<p style='color:#888;'>No .mp3 or .wav files found on the SD card.</p>";
+      }
+      
+      html += "<hr style='border:1px solid #333; margin:15px 0;'>";
+      html += "<form method='POST' action='/upload_audio' enctype='multipart/form-data'>";
+      html += "<label style='color:#888; font-weight:bold; font-size:12px;'>UPLOAD AUDIO FILE TO SD CARD</label><br>";
+      html += "<input type='file' name='f' accept='.wav,.mp3,.m4a' style='background:none; border:none; color:white; padding:10px 0; width:100%;'>";
+      html += "<input type='submit' value='Upload to Screen SD' class='btn' style='margin-top:5px;'></form>";
+  } else {
+      html += "<p style='color:#ff4f4f; font-weight:bold;'>SD Card Not Mounted</p>";
+  }
+  html += "</div>";
+
+  html += "</div></body></html>";
+  server.send(200, "text/html", html);
+}
+
 void handleTech() {
   String html = getWebHeader("tech");
 
-#ifdef BOARD_40_INCH
+#ifdef BOARD_WAVESHARE_43
+  String sysBoard = "Waveshare ESP32-S3 4.3\"";
+  String sysRes = "4.3 inch RGB LCD (800 x 480)";
+  String sysDisp = "RGB Parallel Bus (LovyanGFX)";
+  String sysTouch = "GT911 Capacitive Touch (I2C)";
+#elif defined(BOARD_40_INCH)
   String sysBoard = "ESP32 4.0-inch CYD";
   String sysRes = "4.0 inch TFT LCD (480 x 320)";
   String sysDisp = "ST7796 (VSPI)";
@@ -2466,7 +2798,7 @@ void handleTech() {
       html += "<p><b>Battery Status:</b> Disabled</p>";
   }
   
-#ifdef BOARD_40_INCH
+#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
   if (envMode > 0) {
       if (bmeReady) {
           float tempC = bme.readTemperature();
@@ -2510,7 +2842,12 @@ void handleTech() {
     html += "<form method='POST' action='/upload' enctype='multipart/form-data'>";
     html += "<label style='color:#888; font-weight:bold; font-size:12px;'>UPLOAD FILE TO DISPLAY SD CARD</label><br>";
     html += "<input type='file' name='f' accept='.gcode,.3mf' style='background:none; border:none; color:white; padding:10px 0; width:100%;'>";
-    html += "<input type='submit' value='Upload to Screen SD' class='btn' style='margin-top:5px; background:#00E5FF; color:black;'></form>";
+    html += "<input type='submit' value='Upload GCODE to Screen SD' class='btn' style='margin-top:5px; background:#00E5FF; color:black;'></form>";
+
+    // ---> NEW: INITIALIZE SD CARD BUTTON <---
+    html += "<hr style='border:1px solid #333; margin:15px 0;'>";
+    html += "<a href='/setup_sd' class='btn' style='background:#2A3B5C; color:#00E5FF;'>Initialize SD Card Directories</a>";
+    html += "<p style='color:#888; font-size:11px; text-align:center;'>Creates default folders needed for screen features.</p>";
   } else {
     html += "<p style='color:#ff4f4f; font-weight:bold;'>NOT MOUNTED</p>";
   }
@@ -2532,7 +2869,6 @@ void handleTech() {
   html += "<option value='1'" + String(invertDisplay ? " selected" : "") + ">Inverted (Fixes washed out colors)</option>";
   html += "</select>";
 
-  // Screen Rotation Dropdown for Dual-USB Edition
   int currentRot = preferences.getInt("rotation", 3);
   html += "<label style='color:#888; font-weight:bold; font-size:12px;'>SCREEN ROTATION</label><br>";
   html += "<select name='rotation'>";
@@ -2548,7 +2884,13 @@ void handleTech() {
   html += "<option value='1'" + String(showBattery ? " selected" : "") + ">Enabled</option>";
   html += "</select>";
 
-#ifdef BOARD_40_INCH
+  html += "<label style='color:#888; font-weight:bold; font-size:12px;'>ENABLE SPEAKER / AUDIO PLAYER</label><br>";
+  html += "<select name='enable_audio'>";
+  html += "<option value='0'" + String(!enableAudio ? " selected" : "") + ">Disabled</option>";
+  html += "<option value='1'" + String(enableAudio ? " selected" : "") + ">Enabled</option>";
+  html += "</select>";
+
+#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
   html += "<label style='color:#888; font-weight:bold; font-size:12px;'>ENABLE BME280 ENV SENSOR</label><br>";
   html += "<select name='env_mode'>";
   html += "<option value='0'" + String(envMode == 0 ? " selected" : "") + ">Disabled</option>";
@@ -2556,13 +2898,22 @@ void handleTech() {
   html += "<option value='2'" + String(envMode == 2 ? " selected" : "") + ">Web UI + Display Screen</option>";
   html += "</select>";
   
+  // ---> NEW: DYNAMIC BME280 PIN SELECTORS FOR 4.0 INCH CYD <---
+  #ifdef BOARD_40_INCH
+  html += "<div class='grid'>";
+  html += "<div><label style='color:#888; font-weight:bold; font-size:12px;'>SENSOR SDA PIN</label><br>";
+  html += "<input type='number' name='bme_sda' value='" + String(bmeSDA) + "'></div>";
+  html += "<div><label style='color:#888; font-weight:bold; font-size:12px;'>SENSOR SCL PIN</label><br>";
+  html += "<input type='number' name='bme_scl' value='" + String(bmeSCL) + "'></div>";
+  html += "</div>";
+  #endif
+
   html += "<label style='color:#888; font-weight:bold; font-size:12px;'>TEMPERATURE UNIT</label><br>";
   html += "<select name='use_f'>";
   html += "<option value='0'" + String(!useFahrenheit ? " selected" : "") + ">Celsius (&deg;C)</option>";
   html += "<option value='1'" + String(useFahrenheit ? " selected" : "") + ">Fahrenheit (&deg;F)</option>";
   html += "</select>";
   
-  // ---> NEW: SENSOR CALIBRATION UI <---
   html += "<hr style='border:1px solid #333; margin:15px 0;'>";
   html += "<h3 style='color:#00E5FF; margin-top:0;'>Sensor Calibration</h3>";
   html += "<label style='color:#888; font-weight:bold; font-size:12px;'>TEMP OFFSET (" + String(useFahrenheit ? "&deg;F" : "&deg;C") + ")</label><br>";
@@ -2571,7 +2922,6 @@ void handleTech() {
   html += "<input type='number' step='0.1' name='h_off' value='" + String(humOffset, 1) + "'>";
 #endif
 
-  // Theme Customizer Engine
   html += "<hr style='border:1px solid #333; margin:15px 0;'>";
   html += "<h3 style='color:#00E5FF; margin-top:0;'>Theme Customization</h3>";
   html += "<label style='color:#888; font-weight:bold; font-size:12px;'>UI THEME</label><br>";
@@ -2656,7 +3006,9 @@ void handleSave() {
   if (server.hasArg("invert_display")) {
     invertDisplay = (server.arg("invert_display") == "1");
     preferences.putBool("invertDisplay", invertDisplay);
+#ifndef BOARD_WAVESHARE_43
     tft.invertDisplay(invertDisplay);
+#endif
   }
 
   if (server.hasArg("rotation")) {
@@ -2669,40 +3021,38 @@ void handleSave() {
     preferences.putBool("showBattery", showBattery);
   }
 
+  if (server.hasArg("enable_audio")) {
+    enableAudio = (server.arg("enable_audio") == "1");
+    preferences.putBool("enableAudio", enableAudio);
+  }
+
   if (server.hasArg("env_mode")) {
     envMode = server.arg("env_mode").toInt();
     preferences.putInt("envMode", envMode);
   }
 
+#ifdef BOARD_40_INCH
+  if (server.hasArg("bme_sda")) preferences.putInt("bme_sda", server.arg("bme_sda").toInt());
+  if (server.hasArg("bme_scl")) preferences.putInt("bme_scl", server.arg("bme_scl").toInt());
+#endif
+
   if (server.hasArg("use_f")) {
     useFahrenheit = (server.arg("use_f") == "1");
     preferences.putBool("useFahrenheit", useFahrenheit);
   }
+  
+  if (server.hasArg("t_off")) preferences.putFloat("tempOffset", server.arg("t_off").toFloat());
+  if (server.hasArg("h_off")) preferences.putFloat("humOffset", server.arg("h_off").toFloat());
 
   if (server.hasArg("theme")) {
     currentTheme = server.arg("theme").toInt();
     preferences.putInt("theme", currentTheme);
   }
-  if (server.hasArg("c_bg")) {
-    customBG = server.arg("c_bg");
-    preferences.putString("customBG", customBG);
-  }
-  if (server.hasArg("c_side")) {
-    customSidebar = server.arg("c_side");
-    preferences.putString("customSidebar", customSidebar);
-  }
-  if (server.hasArg("c_card")) {
-    customCard = server.arg("c_card");
-    preferences.putString("customCard", customCard);
-  }
-  if (server.hasArg("c_text")) {
-    customText = server.arg("c_text");
-    preferences.putString("customText", customText);
-  }
-  if (server.hasArg("c_acc")) {
-    customAccent = server.arg("c_acc");
-    preferences.putString("customAccent", customAccent);
-  }
+  if (server.hasArg("c_bg")) preferences.putString("customBG", server.arg("c_bg"));
+  if (server.hasArg("c_side")) preferences.putString("customSidebar", server.arg("c_side"));
+  if (server.hasArg("c_card")) preferences.putString("customCard", server.arg("c_card"));
+  if (server.hasArg("c_text")) preferences.putString("customText", server.arg("c_text"));
+  if (server.hasArg("c_acc")) preferences.putString("customAccent", server.arg("c_acc"));
 
   bool changeWifi = (newSSID.length() > 0);
   if (changeWifi) {
