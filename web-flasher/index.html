@@ -23,12 +23,14 @@
     
     <label for="hardware-select">SELECT HARDWARE MODEL:</label>
     <select id="hardware-select" onchange="updateManifest()">
+      <option value="manifest_43.json">4.3" Waveshare ESP32-S3 Display</option>
       <option value="manifest_40.json">4.0" CYD Display (ST7796)</option>
       <option value="manifest_28.json">2.8" CYD Display (ILI9341 Standard)</option>
       <option value="manifest_28_dual_usb.json">2.8" CYD Display (ST7789 Dual-USB)</option>
     </select>
 
-    <esp-web-install-button id="install-btn" manifest="manifest_40.json"></esp-web-install-button>
+    <!-- Default manifest updated to match the top dropdown option -->
+    <esp-web-install-button id="install-btn" manifest="manifest_43.json"></esp-web-install-button>
 
     <div class="version">v2.0.4 Firmware by Nates Print Shop</div>
   </div>
