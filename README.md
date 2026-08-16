@@ -4,6 +4,7 @@ A custom, standalone touchscreen firmware for the Snapmaker U1 (or any Klipper/M
 
 I built this because I wanted a dedicated, physical screen for my printer without having to deal with the overhead of a Raspberry Pi screen. This firmware talks directly to Moonraker's API to give you live stats, temperature control, toolhead management, and file launching—all from a $15 screen.
 
+* [Waveshare ESP32-S3 4.3inch:](https://amzn.to/4g1MUQd)
 * [Hosyond 2.8" Screen:](https://amzn.to/4fEUpME)
 * [Hosyond 4.0" Screen (Recommended):](https://amzn.to/4hWfHH3)
 * [AITRIP CYD 2.8:](https://amzn.to/3UnLPtl)
