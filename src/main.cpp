@@ -5,19 +5,22 @@
 #include <SPI.h>
 #include <Preferences.h>
 #include <WiFiManager.h>
+#include <WiFiClientSecure.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
 #include <SD.h>
+
 #include <FS.h>
 #include <esp_adc_cal.h>
 #include "esp_idf_version.h"
 // --- ADVANCED AUDIO LIBRARY ---
 #include <Audio.h>
 // --- GLOBAL FIRMWARE VERSION ---
-#define FW_VERSION "v2.0.4"
+#define FW_VERSION "v2.0.5"
 // --- AUDIO CONFIGURATION ---
 int currentVolume = 50; 
 bool enableAudio = false; 
+int tcMode = 0;
 
 // ==========================================
 // --- BOARD SELECTION & GRAPHICS ---
@@ -110,7 +113,7 @@ bool enableAudio = false;
   TFT_eSPI tft = TFT_eSPI();
   #define TEXT_SCALE 1.0f 
 
-  #ifdef BOARD_CYD_28
+  #if defined(BOARD_CYD_28) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
     #include <TFT_Touch.h> 
     #define TFT_BL 21
     #define SD_CS 5 
@@ -134,7 +137,7 @@ bool enableAudio = false;
   #endif
 #endif
 
-// ---> Activate BME280 inclusion <---
+// ---> BME280 Environmental Sensor <---
 #if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
   #include <Wire.h>
   #include <Adafruit_BME280.h>
@@ -144,13 +147,30 @@ bool enableAudio = false;
   int bmeSCL = 25; 
 
   bool pingBME() {
-    // Standard library ping without overriding the Wire pins
     if (bme.begin(0x76, &Wire) || bme.begin(0x77, &Wire)) {
-    bme.setSampling(Adafruit_BME280::MODE_NORMAL, Adafruit_BME280::SAMPLING_X2, Adafruit_BME280::SAMPLING_X16, Adafruit_BME280::SAMPLING_X1, Adafruit_BME280::FILTER_X16, Adafruit_BME280::STANDBY_MS_500);
-    return true;
-  }
+      bme.setSampling(Adafruit_BME280::MODE_NORMAL, Adafruit_BME280::SAMPLING_X2, Adafruit_BME280::SAMPLING_X16, Adafruit_BME280::SAMPLING_X1, Adafruit_BME280::FILTER_X16, Adafruit_BME280::STANDBY_MS_500);
+      return true;
+    }
     return false;
   }
+#endif
+
+// ---> MAX31855 Thermocouple Sensor (4.0" and 4.3" Screens) <---
+#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
+  #include <Adafruit_MAX31855.h>
+
+  #ifdef BOARD_WAVESHARE_43
+    #define MAX_CLK  6
+    #define MAX_CS   16
+    #define MAX_SO   20
+  #else // BOARD_40_INCH (Using SPI JST Port: IO18 SCK, IO21 CS, IO19 MISO)
+    #define MAX_CLK  18
+    #define MAX_CS   21
+    #define MAX_SO   19
+  #endif
+
+  Adafruit_MAX31855 thermocouple(MAX_CLK, MAX_CS, MAX_SO);
+  bool max31855Ready = false;
 #endif
 
 #define PX(x) ((x) * SCREEN_W / 320)
@@ -206,6 +226,29 @@ int fileScrollIndex = 0;
 String selectedFile = "";
 int printTabSource = 0;
 
+// --- AIRSPACE SLICER GLOBALS ---
+bool enableRadar = false;
+int radarAuthMode = 0; // 0 = Anonymous, 1 = OAuth2
+float homeLat = 41.9742; 
+float homeLon = -87.9073; 
+float radarRadiusDeg = 0.5; // ~35 miles 
+float scanAngle = 0.0;
+float prevScanAngle = -1.0;
+unsigned long lastSweepAnim = 0;
+
+struct Airplane {
+  String callsign; float lat; float lon; float track; float altitude;
+};
+
+Airplane planes[30]; 
+int currentPlaneCount = 0;
+unsigned long lastRadarApiCall = 0;
+String radarStatus = "Waiting for data...";
+String radarClientId = "";
+String radarClientSecret = "";
+String radarToken = "";
+unsigned long radarTokenExpiry = 0;
+
 int activeModal = 0; 
 int kbMode = 0;
 String kbInput = ""; 
@@ -259,6 +302,8 @@ void drawSettingsTab();
 void drawTempModal(int type);
 void drawSpeedFanModal();
 void drawActiveToolModal();
+void drawCancelModal();
+void drawPauseModal();
 void drawToolModal(int idx);
 void drawFilamentTypeModal(int idx); 
 void drawKeyboardModal(int idx);
@@ -290,9 +335,9 @@ int getBatteryPercentage(float volts);
 // --- I2S ESP8266Audio ASYNC PLAYER ---
 // ==========================================
 #ifdef BOARD_WAVESHARE_43
-  Audio audio; // Standard I2S routing for ESP32-S3
+  Audio audio; 
 #else
-  Audio audio(true, I2S_DAC_CHANNEL_LEFT_EN); // Standard CYD 4.0 onboard DAC routing
+  Audio audio(true, I2S_DAC_CHANNEL_LEFT_EN); 
   #define AUDIO_EN_PIN 4
 #endif
 
@@ -309,12 +354,10 @@ void audioTask(void *parameter) {
   audioMessage msg;
 
 #ifndef BOARD_WAVESHARE_43
-  // Hard enable the CYD onboard amplifier
   pinMode(AUDIO_EN_PIN, OUTPUT);
   digitalWrite(AUDIO_EN_PIN, LOW);
 #endif
 
-  // The library expects volume from 0 to 21.
   int mappedVol = (currentVolume * 21) / 100;
   audio.setVolume(mappedVol);
 
@@ -410,7 +453,7 @@ void applyTheme() {
 
 String urlEncode(String str) {
   String encoded = "";
-  for (size_t i = 0; i < str.length(); i++) {
+  for (size_t i = 0; i < str.length(); i++) { // FIXED: changed size_size_t to size_t
     char c = str.charAt(i);
     if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
       encoded += c;
@@ -492,7 +535,7 @@ void configModeCallback(WiFiManager *myWiFiManager) {
 }
 
 bool getTouchCoord(int &x, int &y) {
-#ifdef BOARD_CYD_28
+#if defined(BOARD_CYD_28) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
   if (touch.Pressed()) {
     x = touch.X();
     y = touch.Y();
@@ -858,6 +901,270 @@ void launchPatchedPrint(String filename, int source, bool bBed, bool bTime, bool
   forceRedrawForToast = true;
 }
 
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
+
+void drawAirplaneIcon(int x, int y, float angle, uint16_t color) {
+    float rad = (angle - 90) * PI / 180.0;
+    int scale = (SCREEN_H < 280) ? 7 : 11; 
+    int x1 = x + cos(rad) * scale; int y1 = y + sin(rad) * scale;
+    int x2 = x + cos(rad + 2.5) * (scale * 0.66); int y2 = y + sin(rad + 2.5) * (scale * 0.66);
+    int x3 = x + cos(rad - 2.5) * (scale * 0.66); int y3 = y + sin(rad - 2.5) * (scale * 0.66);
+    tft.fillTriangle(x1, y1, x2, y2, x3, y3, color); 
+    tft.drawTriangle(x1, y1, x2, y2, x3, y3, TFT_BLACK); 
+}
+
+void drawRadarTab() {
+  tft.setTextSize(1);
+  
+  uint16_t bgDark = tft.color565(15, 15, 15);
+  uint16_t radarGreen = tft.color565(0, 150, 50);
+  uint16_t textGreen = tft.color565(0, 255, 120);
+  
+  int leftBarW = PX(42);
+  
+  int rightBarW = (SCREEN_W - leftBarW) * 0.35;
+  if (rightBarW < 95) rightBarW = 95;
+  if (rightBarW > 170) rightBarW = 170;
+  
+  int rightBarX = SCREEN_W - rightBarW;
+
+  tft.fillRect(leftBarW, 0, rightBarX - leftBarW, SCREEN_H, bgDark); 
+  uint16_t tableBg = tft.color565(10, 10, 10); 
+  tft.fillRect(rightBarX, 0, rightBarW, SCREEN_H, tableBg);
+  tft.drawFastVLine(rightBarX, 0, SCREEN_H, radarGreen);
+  
+  int cx = leftBarW + ((rightBarX - leftBarW) / 2);
+  int cy = SCREEN_H / 2;
+  
+  int maxR = (cy - 18 < (cx - leftBarW - 18)) ? (cy - 18) : (cx - leftBarW - 18);
+  if (maxR < 30) maxR = 30;
+  int step = maxR / 4;
+  
+  tft.drawCircle(cx, cy, step, radarGreen);
+  tft.drawCircle(cx, cy, step*2, radarGreen);
+  tft.drawCircle(cx, cy, step*3, radarGreen);
+  tft.drawCircle(cx, cy, maxR, radarGreen);
+  
+  tft.drawLine(cx, cy - maxR, cx, cy + maxR, radarGreen);
+  tft.drawLine(cx - maxR, cy, cx + maxR, cy, radarGreen);
+  
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(TFT_WHITE, bgDark);
+  tft.setTextFont(1);
+  tft.drawString("N", cx, cy - maxR - 8);
+  tft.drawString("S", cx, cy + maxR + 8);
+  tft.drawString("W", cx - maxR - 8, cy);
+  tft.drawString("E", cx + maxR + 8, cy);
+
+  tft.setTextDatum(TL_DATUM);
+  tft.setTextColor(textGreen, tableBg);
+  tft.drawString((rightBarW < 110) ? "DATA" : "FLIGHT DATA", rightBarX + 6, 6);
+  tft.drawFastHLine(rightBarX, 20, rightBarW, radarGreen);
+  
+  int tableY = 25;
+  int itemSpacing = (SCREEN_H < 280) ? 30 : 38; 
+  
+  for (int i = 0; i < currentPlaneCount; i++) {
+      float dLat = planes[i].lat - homeLat;
+      float dLon = planes[i].lon - homeLon;
+      int px = cx + (int)((dLon / radarRadiusDeg) * maxR);
+      int py = cy - (int)((dLat / radarRadiusDeg) * maxR);
+
+      if (px > leftBarW + 5 && px < rightBarX - 5 && py > 5 && py < SCREEN_H - 15) {
+          drawAirplaneIcon(px, py, planes[i].track, TFT_YELLOW);
+          
+          String cs = planes[i].callsign; cs.trim(); 
+          
+          if (cs.length() > 0 && tableY < SCREEN_H - itemSpacing) {
+              if (rightBarW >= 130) tft.setTextFont(2); else tft.setTextFont(1);
+              tft.setTextColor(TFT_YELLOW, tableBg);
+              tft.drawString(cs.c_str(), rightBarX + 6, tableY);
+              
+              tft.setTextFont(1);
+              tft.setTextColor(textGreen, tableBg);
+              
+              int altFt = (int)(planes[i].altitude * 3.28084);
+              String altStr = (altFt >= 1000) ? String(altFt / 1000) + "k" : String(altFt);
+              
+              String details = (rightBarW < 130) 
+                  ? String((int)planes[i].track) + "deg | " + altStr 
+                  : "HDG " + String((int)planes[i].track) + "deg | " + altStr + " FT";
+              
+              int subY = (rightBarW >= 130) ? tableY + 16 : tableY + 12;
+              tft.drawString(details.c_str(), rightBarX + 6, subY); 
+              
+              tft.drawFastHLine(rightBarX + 2, subY + 12, rightBarW - 4, tft.color565(20, 45, 20));
+              tableY += itemSpacing; 
+          }
+      }
+  }
+  
+  tft.fillRect(leftBarW, SCREEN_H - 18, rightBarX - leftBarW - 1, 18, bgDark);
+  tft.setTextColor(textGreen, bgDark);
+  tft.setTextDatum(MC_DATUM); 
+  tft.setTextFont(1); 
+  tft.drawString(radarStatus.c_str(), cx, SCREEN_H - 9);
+  tft.setTextDatum(TL_DATUM);
+  
+  prevScanAngle = -1.0; 
+  tft.setTextSize(TEXT_SCALE); 
+}
+
+void fetchOpenSkyData() {
+  if (radarAuthMode == 1 && radarClientId.length() > 0 && radarClientSecret.length() > 0) {
+      if (radarToken == "" || millis() > radarTokenExpiry) {
+          WiFiClientSecure authClient;
+          authClient.setInsecure(); 
+          HTTPClient httpAuth;
+          
+          httpAuth.useHTTP10(true); 
+          httpAuth.begin(authClient, "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token");
+          httpAuth.addHeader("Content-Type", "application/x-www-form-urlencoded");
+          String payload = "grant_type=client_credentials&client_id=" + radarClientId + "&client_secret=" + radarClientSecret;
+          
+          int authCode = httpAuth.POST(payload);
+          if (authCode == 200) {
+              JsonDocument authDoc;
+              deserializeJson(authDoc, httpAuth.getStream());
+              radarToken = authDoc["access_token"].as<String>();
+              int expires = authDoc["expires_in"].as<int>();
+              radarTokenExpiry = millis() + ((expires - 60) * 1000UL); 
+          } else {
+              radarStatus = "Auth Fail: " + String(authCode);
+              httpAuth.end();
+              return;
+          }
+          httpAuth.end();
+      }
+  }
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  
+  String lamin = String(homeLat - radarRadiusDeg, 4);
+  String lomin = String(homeLon - radarRadiusDeg, 4);
+  String lamax = String(homeLat + radarRadiusDeg, 4);
+  String lomax = String(homeLon + radarRadiusDeg, 4);
+  
+  String url = "https://opensky-network.org/api/states/all?lamin=" + lamin + "&lomin=" + lomin + "&lamax=" + lamax + "&lomax=" + lomax;
+  
+  http.useHTTP10(true);
+  http.begin(client, url);
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.addHeader("User-Agent", "ESP32-AirspaceSlicer/1.0");
+  http.setTimeout(10000); 
+  
+  if (radarAuthMode == 1 && radarToken != "") {
+      http.addHeader("Authorization", "Bearer " + radarToken);
+  }
+  
+  int httpCode = http.GET();
+  if (httpCode == 200) {
+      JsonDocument doc; 
+      DeserializationError error = deserializeJson(doc, http.getStream());
+      
+      if (!error) {
+          JsonArray states = doc["states"];
+          currentPlaneCount = 0;
+          if (!states.isNull()) {
+              for (JsonVariant state : states) {
+                  if (currentPlaneCount >= 20) break; 
+                  JsonArray planeData = state.as<JsonArray>();
+                  if (!planeData[1].isNull()) planes[currentPlaneCount].callsign = planeData[1].as<String>();
+                  if (!planeData[5].isNull()) planes[currentPlaneCount].lon = planeData[5].as<float>();
+                  if (!planeData[6].isNull()) planes[currentPlaneCount].lat = planeData[6].as<float>();
+                  if (!planeData[7].isNull()) planes[currentPlaneCount].altitude = planeData[7].as<float>();
+                  if (!planeData[10].isNull()) planes[currentPlaneCount].track = planeData[10].as<float>();
+                  
+                  if (planes[currentPlaneCount].lat != 0.0) {
+                      currentPlaneCount++;
+                  }
+              }
+              radarStatus = "Tracking " + String(currentPlaneCount) + " planes";
+          } else {
+              radarStatus = "Airspace Clear";
+          }
+      } else {
+          radarStatus = String("JSON Error: ") + error.c_str(); 
+      }
+  } else {
+      radarStatus = "API Error: " + String(httpCode);
+  }
+  http.end();
+}
+
+void updateRadar() {
+  if (currentTab != 5 || !enableRadar) return;
+  
+  if (millis() - lastRadarApiCall > 30000 || lastRadarApiCall == 0) {
+      lastRadarApiCall = millis();
+      radarStatus = "Updating...";
+      drawRadarTab(); 
+      fetchOpenSkyData(); 
+      drawRadarTab(); 
+      return;
+  }
+
+  if (millis() - lastSweepAnim > 33) { 
+      lastSweepAnim = millis();
+      
+      int leftBarW = PX(42);
+      int rightBarW = (SCREEN_W - leftBarW) * 0.35;
+      if (rightBarW < 95) rightBarW = 95;
+      if (rightBarW > 170) rightBarW = 170;
+      
+      int rightBarX = SCREEN_W - rightBarW;
+      int cx = leftBarW + ((rightBarX - leftBarW) / 2);
+      int cy = SCREEN_H / 2;
+      
+      int maxR = (cy - 18 < (cx - leftBarW - 18)) ? (cy - 18) : (cx - leftBarW - 18);
+      if (maxR < 30) maxR = 30;
+      int step = maxR / 4;
+      
+      uint16_t bgDark = tft.color565(15, 15, 15);
+      uint16_t radarGreen = tft.color565(0, 150, 50);
+      uint16_t textGreen = tft.color565(0, 255, 120);
+
+      if (prevScanAngle >= 0.0) {
+          float oldRad = prevScanAngle * DEG_TO_RAD;
+          int oldBx = cx + (int)(cos(oldRad) * maxR);
+          int oldBy = cy + (int)(sin(oldRad) * maxR);
+          tft.drawLine(cx, cy, oldBx, oldBy, bgDark); 
+          
+          tft.drawCircle(cx, cy, step, radarGreen);
+          tft.drawCircle(cx, cy, step*2, radarGreen);
+          tft.drawCircle(cx, cy, step*3, radarGreen);
+          tft.drawCircle(cx, cy, maxR, radarGreen);
+          tft.drawLine(cx, cy - maxR, cx, cy + maxR, radarGreen);
+          tft.drawLine(cx - maxR, cy, cx + maxR, cy, radarGreen);
+      }
+
+      scanAngle += 4.0; 
+      if (scanAngle >= 360.0) scanAngle -= 360.0;
+
+      float newRad = scanAngle * DEG_TO_RAD;
+      int newBx = cx + (int)(cos(newRad) * maxR);
+      int newBy = cy + (int)(sin(newRad) * maxR);
+      tft.drawLine(cx, cy, newBx, newBy, textGreen);
+
+      for (int i = 0; i < currentPlaneCount; i++) {
+          float dLat = planes[i].lat - homeLat;
+          float dLon = planes[i].lon - homeLon;
+          int px = cx + (int)((dLon / radarRadiusDeg) * maxR);
+          int py = cy - (int)((dLat / radarRadiusDeg) * maxR);
+
+          if (px > leftBarW + 5 && px < rightBarX - 5 && py > 5 && py < SCREEN_H - 15) {
+              drawAirplaneIcon(px, py, planes[i].track, TFT_YELLOW);
+          }
+      }
+
+      prevScanAngle = scanAngle;
+  }
+}
+
+#endif
+
 void setup() {
   Serial.begin(115200);
 
@@ -868,7 +1175,7 @@ void setup() {
 
   tft.init();
 
-  preferences.begin("u1_config", false);
+  preferences.begin("printer", false);
   
   int screenRotation = preferences.getInt("rotation", 3);
   
@@ -894,36 +1201,51 @@ void setup() {
   envMode = preferences.getInt("envMode", 0); 
   useFahrenheit = preferences.getBool("useFahrenheit", false); 
   tempOffset = preferences.getFloat("tempOffset", 0.0); 
-  humOffset = preferences.getFloat("humOffset", 0.0);   
+  humOffset = preferences.getFloat("humOffset", 0.0);    
   enableAudio = preferences.getBool("enableAudio", false);
   
-// Initialize the BME280 Environment Sensor for the larger boards
-  #if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
-    #ifdef BOARD_WAVESHARE_43
-      Wire.begin(8, 9); // Native ESP32-S3 I2C Pins for Waveshare
-    #else
-      // IGNORE saved memory and aggressively hardcode the correct 4.0-inch pins!
-      bmeSDA = 32;
-      bmeSCL = 25;
-      Wire.begin(bmeSDA, bmeSCL); 
-    #endif
-    
-    // Retry connecting up to 4 times at boot to ensure it wakes up
-    for (int i = 0; i < 4; i++) {
-      delay(500); 
-      if (pingBME()) {
-        bmeReady = true;
-        Serial.println("BME280 connected successfully at boot!");
-        break; 
-      }
-    }
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
+  enableRadar = preferences.getBool("enableRadar", false);
+  homeLat = preferences.getFloat("radarLat", 41.9742f);
+  homeLon = preferences.getFloat("radarLon", -87.9073f);
+  radarRadiusDeg = preferences.getFloat("radarRad", 0.80f);
+  radarAuthMode = preferences.getInt("radarAuthMode", 0);
+  radarClientId = preferences.getString("radarClientId", "");
+  radarClientSecret = preferences.getString("radarClientSecret", "");
+#endif
+
+#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
+  #ifdef BOARD_WAVESHARE_43
+    Wire.begin(8, 9);
+  #else
+    bmeSDA = 32;
+    bmeSCL = 25;
+    Wire.begin(bmeSDA, bmeSCL); 
   #endif
+  
+  for (int i = 0; i < 4; i++) {
+    delay(500); 
+    if (pingBME()) {
+      bmeReady = true;
+      Serial.println("BME280 connected successfully at boot!");
+      break; 
+    }
+  }
+
+  // MAX31855 Thermocouple Startup Check
+  if (thermocouple.begin()) {
+    max31855Ready = true;
+    Serial.println("MAX31855 Thermocouple initialized!");
+  } else {
+    Serial.println("MAX31855 Thermocouple NOT detected.");
+  }
+#endif
 
   applyTheme();
   tft.setTextSize(TEXT_SCALE); 
   drawBootLogo();
 
-#ifdef BOARD_CYD_28
+#if defined(BOARD_CYD_28) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
   touch.setRotation(screenRotation);
   if (SD.begin(SD_CS)) {
     sdCardReady = true;
@@ -959,7 +1281,21 @@ void setup() {
   }
 #endif
 
-  // INIT AUDIO TASK (Runs exclusively in the background on Core 0)
+tcMode = preferences.getInt("tcMode", 0);
+
+#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
+  // MAX31855 Thermocouple Startup Check
+  if (tcMode > 0) {
+    if (thermocouple.begin()) {
+      max31855Ready = true;
+      Serial.println("MAX31855 Thermocouple initialized!");
+    } else {
+      Serial.println("MAX31855 Thermocouple NOT detected.");
+    }
+  }
+#endif
+
+
   if (enableAudio && sdCardReady) {
       xTaskCreatePinnedToCore(audioTask, "AudioTask", 8192, NULL, 1, NULL, 0);
   }
@@ -988,7 +1324,7 @@ void setup() {
   }
   
   bool loadedFromSD = false;
-#ifdef BOARD_CYD_28
+#if defined(BOARD_CYD_28) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
   if (sdCardReady && SD.exists("/calibration.json")) {
     File file = SD.open("/calibration.json", FILE_READ);
     if (file) {
@@ -1065,6 +1401,8 @@ void setup() {
     preferences.putString("printer_ip", printerIP);
     preferences.putString("printer_name", printerName);
   }
+
+  preferences.end();
 
   if (MDNS.begin(mdnsName)) {
     MDNS.addService("http", "tcp", 80);
@@ -1162,6 +1500,10 @@ void setup() {
 void loop() {
   server.handleClient(); 
 
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
+  updateRadar();
+#endif
+
   int touchX = 0, touchY = 0;
   if (getTouchCoord(touchX, touchY)) {
 
@@ -1242,6 +1584,35 @@ void loop() {
               showToast("Tool Change", "Parking Tool");
               int dummyX, dummyY; while(getTouchCoord(dummyX, dummyY)) { delay(10); server.handleClient(); yield(); }
               closedModal = true; handledTouch = true;
+          } else { closedModal = true; }
+        }
+        else if (activeModal == 9) { // Cancel Print Confirmation Modal
+          if (touchY > PY(140) && touchY < PY(180)) {
+              if (touchX > PX(60) && touchX < PX(160)) { 
+                  closedModal = true; handledTouch = true; // NO button
+              }
+              else if (touchX > PX(180) && touchX < PX(280)) { 
+                  sendGcode("CANCEL_PRINT"); 
+                  showToast("Command", "Cancelling...", true);
+                  closedModal = true; handledTouch = true; // YES button
+              }
+          } else { closedModal = true; }
+        }
+        else if (activeModal == 14) { // Pause / Resume Confirmation Modal
+          if (touchY > PY(140) && touchY < PY(180)) {
+              if (touchX > PX(60) && touchX < PX(160)) { 
+                  closedModal = true; handledTouch = true; // NO button
+              }
+              else if (touchX > PX(180) && touchX < PX(280)) { 
+                  if (currentState == "paused") { 
+                    sendGcode("RESUME"); 
+                    showToast("Command", "Resuming print..."); 
+                  } else { 
+                    sendGcode("PAUSE"); 
+                    showToast("Command", "Pausing print..."); 
+                  }
+                  closedModal = true; handledTouch = true; // YES button
+              }
           } else { closedModal = true; }
         }
         else if (activeModal >= 10 && activeModal <= 13) {
@@ -1530,14 +1901,26 @@ void loop() {
              else if (currentTab == 2) drawMoveTab();
              else if (currentTab == 3) drawPrintTab();
              else if (currentTab == 4) drawSettingsTab();
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
+             else if (currentTab == 5 && enableRadar) {
+                 lastRadarApiCall = 0;
+                 drawRadarTab();
+             }
+#endif
           }
         }
         if (!modalForceClosed) lastTouchTime = millis(); return; 
       }
 
+      // --- SIDEBAR TOUCH CALCULATION FOR ALL BOARDS ---
       if (touchX < PX(42)) {
-        int tappedTab = touchY / (SCREEN_H / 5); 
-        if (tappedTab < 5) {
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
+        int numTabs = enableRadar ? 6 : 5;
+#else
+        int numTabs = 5;
+#endif
+        int tappedTab = touchY / (SCREEN_H / numTabs); 
+        if (tappedTab < numTabs) {
           if (tappedTab != currentTab || modalForceClosed) {
             currentTab = tappedTab;
             
@@ -1555,6 +1938,12 @@ void loop() {
             else if (currentTab == 2) drawMoveTab();
             else if (currentTab == 3) drawPrintTab();
             else if (currentTab == 4) drawSettingsTab();
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
+            else if (currentTab == 5 && enableRadar) {
+                lastRadarApiCall = 0; 
+                drawRadarTab();
+            }
+#endif
             
             updateDynamicUI(); 
           }
@@ -1563,18 +1952,22 @@ void loop() {
         return;
       } 
       
+      // --- HOME TAB TOUCH ZONES ---
       if (currentTab == 0) {
         if (touchX > PX(48) && touchX < PX(178) && touchY > PY(22) && touchY < PY(76)) { activeModal = 1; drawTempModal(1); }
         else if (touchX > PX(184) && touchX < PX(314) && touchY > PY(22) && touchY < PY(76)) { activeModal = 8; drawActiveToolModal(); }
         else if (touchX > PX(48) && touchX < PX(178) && touchY > PY(82) && touchY < PY(136)) { activeModal = 2; drawTempModal(2); }
         else if (touchX > PX(184) && touchX < PX(314) && touchY > PY(82) && touchY < PY(136)) { activeModal = 7; drawSpeedFanModal(); }
         
-        else if (touchX > PX(48) && touchX < PX(132) && touchY > PY(174) && touchY < PY(226)) {
-          if (currentState == "paused") { sendGcode("RESUME"); showToast("Command", "Resuming print..."); }
-          else { sendGcode("PAUSE"); showToast("Command", "Pausing print..."); }
+        // PAUSE SAFETY POP-UP (Matches X: PX(48) to PX(178))
+        else if (touchX > PX(48) && touchX < PX(178) && touchY > PY(174) && touchY < PY(226)) {
+          activeModal = 14;
+          drawPauseModal();
         }
-        else if (touchX > PX(138) && touchX < PX(222) && touchY > PY(174) && touchY < PY(226)) { 
-          sendGcode("CANCEL_PRINT"); showToast("Command", "Cancelling print...", true); 
+        // STOP / CANCEL SAFETY POP-UP (Matches X: PX(184) to PX(314))
+        else if (touchX > PX(184) && touchX < PX(314) && touchY > PY(174) && touchY < PY(226)) { 
+          activeModal = 9; 
+          drawCancelModal();
         }
       }
       else if (currentTab == 1) {
@@ -1703,6 +2096,8 @@ void loop() {
           if (activeModal == 1 || activeModal == 2) drawTempModal(activeModal);
           else if (activeModal == 7) drawSpeedFanModal();
           else if (activeModal == 8) drawActiveToolModal();
+          else if (activeModal == 9) drawCancelModal();
+          else if (activeModal == 14) drawPauseModal();
           else if (activeModal >= 10 && activeModal <= 13) drawToolModal(activeModal - 10);
           else if ((activeModal >= 20 && activeModal <= 23) || activeModal == 50 || activeModal == 51) drawKeyboardModal(activeModal >= 20 && activeModal <= 23 ? activeModal - 20 : 0);
           else if (activeModal >= 30 && activeModal <= 33) drawColorPickerModal(activeModal - 30);
@@ -1716,6 +2111,12 @@ void loop() {
           else if (currentTab == 2) drawMoveTab();
           else if (currentTab == 3) drawPrintTab();
           else if (currentTab == 4) drawSettingsTab();
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
+          else if (currentTab == 5 && enableRadar) {
+              lastRadarApiCall = 0; 
+              drawRadarTab();        
+          }
+#endif
       }
   }
 
@@ -1738,7 +2139,7 @@ void drawCornerMarker(int corner, uint16_t color) {
 }
 
 void touchCalibrate() {
-#ifdef BOARD_CYD_28
+#if defined(BOARD_CYD_28) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
   long val[8] = {0, 0, 0, 0, 0, 0, 0, 0};
   touch.setCal(0, 4095, 0, 4095, SCREEN_W, SCREEN_H, 0);
 
@@ -1843,32 +2244,38 @@ void touchCalibrate() {
   delay(1200);
 
 #elif defined(BOARD_WAVESHARE_43)
-  // Capacitive Touch doesn't need physical calibration!
   isCalibrated = true;
   return;
 #endif
 }
 
 void drawSidebar() {
-  tft.fillRect(0, 0, PX(42), SCREEN_H, SIDEBAR_COLOR);
-  tft.setTextSize(TEXT_SCALE);
-  int numTabs = 5;
-  int stepY = SCREEN_H / numTabs;
-  for (int i = 0; i < numTabs; i++) {
-    int y = i * stepY;
-    if (i == currentTab) {
-      tft.fillRect(0, y, PX(4), stepY, ACCENT_CYAN); 
-      tft.setTextColor(TFT_WHITE, SIDEBAR_COLOR);
-    } else {
-      tft.setTextColor(TEXT_GRAY, SIDEBAR_COLOR);
-    }
+  tft.fillRect(0, 0, PX(42), SCREEN_H, BG_COLOR);
+  tft.drawFastVLine(PX(41), 0, SCREEN_H, tft.color565(50, 55, 65));
+  
+  const char* labels[] = {"H", "T", "M", "P", "S"};
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
+  int totalTabs = enableRadar ? 6 : 5;
+#else
+  int totalTabs = 5;
+#endif
+  int tabHeight = SCREEN_H / totalTabs;
+
+  for (int i = 0; i < 5; i++) {
+    int yPos = (i * tabHeight) + (tabHeight / 2);
+    tft.setTextColor((currentTab == i) ? ACCENT_CYAN : TEXT_GRAY, BG_COLOR);
     tft.setTextDatum(MC_DATUM);
-    if (i == 0) tft.drawString("H", PX(23), y + (stepY/2), 2); 
-    if (i == 1) tft.drawString("T", PX(23), y + (stepY/2), 2); 
-    if (i == 2) tft.drawString("M", PX(23), y + (stepY/2), 2); 
-    if (i == 3) tft.drawString("P", PX(23), y + (stepY/2), 2); 
-    if (i == 4) tft.drawString("S", PX(23), y + (stepY/2), 2); 
+    tft.drawString(labels[i], PX(21), yPos, 2);
   }
+
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
+  if (enableRadar) {
+    int rYPos = (5 * tabHeight) + (tabHeight / 2);
+    tft.setTextColor((currentTab == 5) ? ACCENT_CYAN : TEXT_GRAY, BG_COLOR);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("R", PX(21), rYPos, 2);
+  }
+#endif
 }
 
 void drawHomeTab() {
@@ -1968,6 +2375,48 @@ void drawSpeedFanModal() {
 
   tft.setTextColor(TEXT_GRAY, BG_COLOR);
   tft.drawString("Tap anywhere else to cancel", PX(42) + (SCREEN_W-PX(42))/2, SCREEN_H - PY(10), 1);
+  tft.setTextDatum(TL_DATUM);
+}
+
+void drawCancelModal() {
+  tft.fillRect(PX(42), 0, SCREEN_W - PX(42), SCREEN_H, BG_COLOR); 
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(TFT_WHITE, BG_COLOR);
+  tft.setTextFont(2);
+  tft.drawString("CANCEL PRINT?", PX(42) + (SCREEN_W-PX(42))/2, PY(60));
+  
+  tft.setTextFont(1);
+  tft.setTextColor(TEXT_GRAY, BG_COLOR);
+  tft.drawString("Are you sure you want to stop the print?", PX(42) + (SCREEN_W-PX(42))/2, PY(100));
+
+  tft.fillRoundRect(PX(60), PY(140), PX(100), PY(40), 6, tft.color565(50, 55, 65));
+  tft.setTextColor(TFT_WHITE);
+  tft.drawString("NO (Back)", PX(110), PY(160));
+
+  tft.fillRoundRect(PX(180), PY(140), PX(100), PY(40), 6, BTN_RED);
+  tft.drawString("YES (Cancel)", PX(230), PY(160));
+  tft.setTextDatum(TL_DATUM);
+}
+
+void drawPauseModal() {
+  tft.fillRect(PX(42), 0, SCREEN_W - PX(42), SCREEN_H, BG_COLOR); 
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(TFT_WHITE, BG_COLOR);
+  tft.setTextFont(2);
+  tft.drawString(currentState == "paused" ? "RESUME PRINT?" : "PAUSE PRINT?", PX(42) + (SCREEN_W-PX(42))/2, PY(60));
+  
+  tft.setTextFont(1);
+  tft.setTextColor(TEXT_GRAY, BG_COLOR);
+  tft.drawString(currentState == "paused" ? "Are you sure you want to resume?" : "Are you sure you want to pause?", PX(42) + (SCREEN_W-PX(42))/2, PY(100));
+
+  tft.fillRoundRect(PX(60), PY(140), PX(100), PY(40), 6, tft.color565(50, 55, 65));
+  tft.setTextColor(TFT_WHITE);
+  tft.drawString("NO (Back)", PX(110), PY(160));
+
+  uint16_t btnColor = (currentState == "paused") ? ACCENT_CYAN : BTN_BLUE;
+  tft.fillRoundRect(PX(180), PY(140), PX(100), PY(40), 6, btnColor);
+  tft.setTextColor(currentState == "paused" ? BG_COLOR : TFT_WHITE, btnColor);
+  tft.drawString("YES", PX(230), PY(160));
   tft.setTextDatum(TL_DATUM);
 }
 
@@ -2322,7 +2771,10 @@ void drawPrintTab() {
 
 void drawSettingsTab() {
   tft.fillRect(PX(42), 0, SCREEN_W - PX(42), SCREEN_H, BG_COLOR);
+  
+  tft.setTextFont(1); 
   tft.setTextSize(TEXT_SCALE);
+  
   tft.setTextColor(TFT_WHITE, BG_COLOR);
   tft.drawString("SYS_CONFIG", PX(55), PY(6), 2);
 
@@ -2365,9 +2817,11 @@ void drawSettingsTab() {
   updateDynamicUI(); 
 }
 
+
 void updateDynamicUI() {
   if (activeModal > 0) return; 
 
+  tft.setTextFont(1);
   tft.setTextSize(TEXT_SCALE);
   tft.setTextPadding(0);
 
@@ -2462,49 +2916,61 @@ void updateDynamicUI() {
   }
   else if (currentTab == 4) {
 #if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
-    if (envMode > 0) {
-        if (!bmeReady) {
-            static unsigned long lastBmePing = 0;
-            if (millis() - lastBmePing > 5000) {
-                lastBmePing = millis();
-                
-            }
-        }
+    if (envMode > 0 || tcMode > 0) {
+      tft.fillRect(PX(52), PY(102), PX(260), PY(24), BG_COLOR); 
+      tft.setTextDatum(TL_DATUM);
+      int lineY = PY(104);
 
+      // Render BME280 on Settings Screen if enabled
+      if (envMode > 0) {
         if (bmeReady) {
-            float tempC = bme.readTemperature();
-            if (!isnan(tempC) && tempC < 100.0 && tempC > -40.0) {
-                float tempV = useFahrenheit ? (tempC * 9.0 / 5.0) + 32.0 : tempC;
-                tempV += tempOffset; 
-                String unitV = useFahrenheit ? "F" : "C";
-                float hum = bme.readHumidity() + humOffset;
-                float pressV = bme.readPressure() / 100.0F;
+          float tempC = bme.readTemperature();
+          if (!isnan(tempC) && tempC < 100.0 && tempC > -40.0) {
+            float tempV = useFahrenheit ? (tempC * 9.0 / 5.0) + 32.0 : tempC;
+            tempV += tempOffset; 
+            String unitV = useFahrenheit ? "F" : "C";
+            float hum = bme.readHumidity() + humOffset;
 
-                String printStatus = "Optimal for Printing";
-                if (hum > 55.0) printStatus = "Poor (Dry Filament!)";
-                else if (tempC < 15.0) printStatus = "Poor (Too Cold!)";
-                else if (tempC > 35.0) printStatus = "Poor (Too Hot!)";
-                else if (hum > 45.0) printStatus = "Fair (Monitor Humid)";
+            String printStatus = "Optimal";
+            if (hum > 55.0) printStatus = "High Humid!";
+            else if (tempC < 15.0) printStatus = "Too Cold!";
+            else if (tempC > 35.0) printStatus = "Too Hot!";
 
-                tft.fillRect(PX(52), PY(102), PX(260), PY(24), BG_COLOR); 
-                tft.setTextDatum(TL_DATUM);
-                tft.setTextColor(TEXT_GRAY, BG_COLOR);
-                tft.drawString("Env: " + String(tempV, 1) + unitV + ", " + String(hum, 1) + "% RH, " + String(pressV, 1) + " hPa", PX(55), PY(104), 1);
-                tft.setTextColor(ACCENT_CYAN, BG_COLOR);
-                tft.drawString("Status: " + printStatus, PX(55), PY(116), 1);
-            }
+            tft.setTextColor(TEXT_GRAY, BG_COLOR);
+            tft.drawString("Env: " + String(tempV, 1) + "&deg;" + unitV + ", " + String(hum, 0) + "% RH (" + printStatus + ")", PX(55), lineY, 1);
+            lineY += PY(12);
+          }
         } else {
-            tft.fillRect(PX(52), PY(102), PX(260), PY(24), BG_COLOR); 
-            tft.setTextDatum(TL_DATUM);
-            tft.setTextColor(tft.color565(255, 180, 180), BG_COLOR);
-            tft.drawString("Env Sensor: Scanning for BME280...", PX(55), PY(104), 1);
+          tft.setTextColor(tft.color565(255, 180, 180), BG_COLOR);
+          tft.drawString("Env Sensor: Scanning...", PX(55), lineY, 1);
+          lineY += PY(12);
         }
+      }
+
+      // Render MAX31855 Thermocouple on Settings Screen if enabled
+      if (tcMode > 0) {
+        if (max31855Ready) {
+          double tcC = thermocouple.readCelsius();
+          if (!isnan(tcC)) {
+            float tcVal = useFahrenheit ? (tcC * 9.0 / 5.0) + 32.0 : tcC;
+            String tcUnit = useFahrenheit ? "F" : "C";
+            tft.setTextColor(ACCENT_CYAN, BG_COLOR);
+            tft.drawString("TC: " + String(tcVal, 1) + "&deg;" + tcUnit, PX(55), lineY, 1);
+          } else {
+            tft.setTextColor(tft.color565(255, 180, 180), BG_COLOR);
+            tft.drawString("TC: Error / Fault", PX(55), lineY, 1);
+          }
+        } else {
+          tft.setTextColor(TEXT_GRAY, BG_COLOR);
+          tft.drawString("TC: Not Detected", PX(55), lineY, 1);
+        }
+      }
     }
 #endif
   }
 
-  // Draw the top bar on every screen (except modals)
-  if (showBattery) {
+  // Draw battery on non-radar tabs
+  if (showBattery && currentTab != 5) {
       int pct = getBatteryPercentage(getBatteryVoltage());
       tft.setTextDatum(TR_DATUM);
       tft.setTextColor(TFT_GREEN, BG_COLOR);
@@ -2514,7 +2980,8 @@ void updateDynamicUI() {
   }
   
 #if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
-  if (envMode == 2 && bmeReady) {
+  // Draw environment readings on non-radar tabs (Header Overlay)
+  if (envMode == 2 && bmeReady && currentTab != 5) {
       float tempC = bme.readTemperature();
       if (!isnan(tempC) && tempC < 100.0 && tempC > -40.0) {
           float tempVal = useFahrenheit ? (tempC * 9.0 / 5.0) + 32.0 : tempC;
@@ -2532,9 +2999,31 @@ void updateDynamicUI() {
           tft.setTextPadding(0);
       }
   }
+
+  // Draw MAX31855 Thermocouple reading on non-radar tabs (Header Overlay)
+  if (tcMode == 2 && max31855Ready && currentTab != 5) {
+    double tcC = thermocouple.readCelsius();
+    if (!isnan(tcC)) {
+      float tcVal = useFahrenheit ? (tcC * 9.0 / 5.0) + 32.0 : tcC;
+      String tcUnit = useFahrenheit ? "F" : "C";
+      
+      // Calculate dynamic Y position to prevent overlap with Battery / BME280
+      int tcY = PY(3);
+      if (showBattery) tcY += PY(12);
+      if (envMode == 2 && bmeReady) tcY += PY(12);
+
+      tft.setTextDatum(TR_DATUM);
+      tft.setTextColor(ACCENT_CYAN, BG_COLOR);
+      tft.setTextPadding(PX(80));
+      tft.drawString("TC: " + String(tcVal, 1) + tcUnit, PX(314), tcY, 1);
+      tft.setTextPadding(0);
+      tft.setTextDatum(TL_DATUM);
+    }
+  }
 #endif
 
 }
+
 
 void fetchPrinterData() {
   HTTPClient http;
@@ -2723,7 +3212,6 @@ void handleAudio() {
       bool foundAudio = false;
       while(file) {
           String fn = String(file.name());
-          // Scan for all standard Audio formats supported by the library
           if(!file.isDirectory() && (fn.endsWith(".wav") || fn.endsWith(".WAV") || fn.endsWith(".mp3") || fn.endsWith(".MP3") || fn.endsWith(".m4a"))) {
               foundAudio = true;
               if(!fn.startsWith("/")) fn = "/" + fn;
@@ -2752,6 +3240,7 @@ void handleAudio() {
   server.send(200, "text/html", html);
 }
 
+
 void handleTech() {
   String html = getWebHeader("tech");
 
@@ -2765,7 +3254,7 @@ void handleTech() {
   String sysRes = "4.0 inch TFT LCD (480 x 320)";
   String sysDisp = "ST7796 (VSPI)";
   String sysTouch = "XPT2046 (Shared SPI)";
-#elif defined(BOARD_CYD_28)
+#elif defined(BOARD_CYD_28) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
   String sysBoard = "ESP32-2432S028 (CYD 2.8)";
   String sysRes = "2.8 inch TFT LCD (320 x 240)";
 #ifdef ST7789_2_DRIVER
@@ -2806,9 +3295,9 @@ void handleTech() {
               html += "<p><b>Env Sensor:</b> Error (Connection Lost - Check Wires!)</p>";
           } else {
               float tempV = useFahrenheit ? (tempC * 9.0 / 5.0) + 32.0 : tempC;
-              tempV += tempOffset; // Apply User Calibration Offset
+              tempV += tempOffset; 
               String unitV = useFahrenheit ? "F" : "C";
-              float hum = bme.readHumidity() + humOffset; // Apply User Calibration Offset
+              float hum = bme.readHumidity() + humOffset; 
               float pressV = bme.readPressure() / 100.0F;
 
               String printStatus = "Optimal for Printing";
@@ -2824,6 +3313,24 @@ void handleTech() {
       }
   } else {
       html += "<p><b>Env Sensor:</b> Disabled</p>";
+  }
+
+  // Thermocouple Hardware Diagnostic
+  if (tcMode > 0) {
+    if (max31855Ready) {
+      double tcC = thermocouple.readCelsius();
+      if (isnan(tcC)) {
+        html += "<p><b>Thermocouple:</b> Error (Open Circuit / Fault)</p>";
+      } else {
+        float tcVal = useFahrenheit ? (tcC * 9.0 / 5.0) + 32.0 : tcC;
+        String tcUnit = useFahrenheit ? "&deg;F" : "&deg;C";
+        html += "<p><b>Thermocouple:</b> " + String(tcVal, 1) + tcUnit + "</p>";
+      }
+    } else {
+      html += "<p><b>Thermocouple:</b> Error (Not Detected on Boot)</p>";
+    }
+  } else {
+    html += "<p><b>Thermocouple:</b> Disabled</p>";
   }
 #endif
   
@@ -2844,7 +3351,6 @@ void handleTech() {
     html += "<input type='file' name='f' accept='.gcode,.3mf' style='background:none; border:none; color:white; padding:10px 0; width:100%;'>";
     html += "<input type='submit' value='Upload GCODE to Screen SD' class='btn' style='margin-top:5px; background:#00E5FF; color:black;'></form>";
 
-    // ---> NEW: INITIALIZE SD CARD BUTTON <---
     html += "<hr style='border:1px solid #333; margin:15px 0;'>";
     html += "<a href='/setup_sd' class='btn' style='background:#2A3B5C; color:#00E5FF;'>Initialize SD Card Directories</a>";
     html += "<p style='color:#888; font-size:11px; text-align:center;'>Creates default folders needed for screen features.</p>";
@@ -2897,8 +3403,14 @@ void handleTech() {
   html += "<option value='1'" + String(envMode == 1 ? " selected" : "") + ">Web UI Only</option>";
   html += "<option value='2'" + String(envMode == 2 ? " selected" : "") + ">Web UI + Display Screen</option>";
   html += "</select>";
+
+  html += "<label style='color:#888; font-weight:bold; font-size:12px;'>ENABLE MAX31855 THERMOCOUPLE</label><br>";
+  html += "<select name='tc_mode'>";
+  html += "<option value='0'" + String(tcMode == 0 ? " selected" : "") + ">Disabled</option>";
+  html += "<option value='1'" + String(tcMode == 1 ? " selected" : "") + ">Web UI Only</option>";
+  html += "<option value='2'" + String(tcMode == 2 ? " selected" : "") + ">Web UI + Display Screen</option>";
+  html += "</select>";
   
-  // ---> NEW: DYNAMIC BME280 PIN SELECTORS FOR 4.0 INCH CYD <---
   #ifdef BOARD_40_INCH
   html += "<div class='grid'>";
   html += "<div><label style='color:#888; font-weight:bold; font-size:12px;'>SENSOR SDA PIN</label><br>";
@@ -2941,6 +3453,37 @@ void handleTech() {
   html += "<div style='display:flex; justify-content:space-between; margin-bottom:5px;'><label style='color:#888;'>Accent</label><input type='color' name='c_acc' value='" + customAccent + "' style='width:50%; height:30px;'></div>";
   html += "</div>";
   html += "<script>toggleCustom();</script>";
+
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
+  html += "<hr style='border:1px solid #333; margin:15px 0;'>";
+  html += "<h3 style='color:#00E5FF; margin-top:0;'>Airspace Slicer Settings</h3>";
+  html += "<p style='color:#888; font-size:12px; margin-top:-10px;'>Anonymous gives 400 credits/day. Standard OpenSky OAuth2 accounts get 4,000 credits/day.</p>";
+  
+  html += "<label style='color:#888; font-weight:bold; font-size:12px;'>ENABLE FLIGHT RADAR TAB</label><br>";
+  html += "<select name='enable_radar'>";
+  html += "<option value='0'" + String(!enableRadar ? " selected" : "") + ">Disabled</option>";
+  html += "<option value='1'" + String(enableRadar ? " selected" : "") + ">Enabled</option>";
+  html += "</select>";
+
+  html += "<label style='color:#888; font-weight:bold; font-size:12px;'>AUTHENTICATION MODE</label><br>";
+  html += "<select name='r_auth'>";
+  html += "<option value='0'" + String(radarAuthMode == 0 ? " selected" : "") + ">Anonymous (No Account Needed - 400 Credits)</option>";
+  html += "<option value='1'" + String(radarAuthMode == 1 ? " selected" : "") + ">OAuth2 (Client Credentials - 4,000 Credits)</option>";
+  html += "</select>";
+  
+  html += "<div class='grid'><div><label style='color:#888; font-weight:bold; font-size:12px;'>LATITUDE</label><br>";
+  html += "<input type='text' name='r_lat' value='" + String(homeLat, 4) + "'></div>";
+  html += "<div><label style='color:#888; font-weight:bold; font-size:12px;'>LONGITUDE</label><br>";
+  html += "<input type='text' name='r_lon' value='" + String(homeLon, 4) + "'></div></div>";
+  
+  html += "<div class='grid'><div><label style='color:#888; font-weight:bold; font-size:12px;'>OPENSKY CLIENT ID</label><br>";
+  html += "<input type='text' name='r_cid' value='" + radarClientId + "'></div>";
+  html += "<div><label style='color:#888; font-weight:bold; font-size:12px;'>OPENSKY CLIENT SECRET</label><br>";
+  html += "<input type='text' name='r_csec' value='" + radarClientSecret + "' placeholder='Leave blank to keep saved secret'></div></div>";
+
+  html += "<label style='color:#888; font-weight:bold; font-size:12px;'>RADAR RADIUS (Degrees: 0.5 ≈ 35 miles, Max: 2.0)</label><br>";
+  html += "<input type='text' name='r_rad' value='" + String(radarRadiusDeg, 2) + "'>";
+#endif
   
   html += "<hr style='border:1px solid #333; margin:15px 0;'>";
   html += "<label style='color:#888; font-weight:bold; font-size:12px;'>NEW WI-FI SSID (Leave blank to keep current)</label><br>";
@@ -2954,6 +3497,7 @@ void handleTech() {
   html += "</div></body></html>";
   server.send(200, "text/html", html);
 }
+
 
 void handleFileUpload() {
   HTTPUpload& upload = server.upload();
@@ -2989,15 +3533,17 @@ void handleControl() {
 }
 
 void handleSave() {
+  preferences.begin("printer", false);
+
   String newIP = server.arg("ip");
   String newName = server.arg("name");
   String newMDNS = server.arg("mdns");
   String newSSID = server.arg("wifi_ssid");
   String newPass = server.arg("wifi_pass");
   
-  newIP.toCharArray(printerIP, sizeof(printerIP));
-  newName.toCharArray(printerName, sizeof(printerName));
-  newMDNS.toCharArray(mdnsName, sizeof(mdnsName));
+  if (newIP.length() > 0) newIP.toCharArray(printerIP, sizeof(printerIP));
+  if (newName.length() > 0) newName.toCharArray(printerName, sizeof(printerName));
+  if (newMDNS.length() > 0) newMDNS.toCharArray(mdnsName, sizeof(mdnsName));
   
   preferences.putString("printer_ip", printerIP);
   preferences.putString("printer_name", printerName);
@@ -3031,6 +3577,14 @@ void handleSave() {
     preferences.putInt("envMode", envMode);
   }
 
+#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
+  // SAVE MAX31855 THERMOCOUPLE MODE
+  if (server.hasArg("tc_mode")) {
+    tcMode = server.arg("tc_mode").toInt();
+    preferences.putInt("tcMode", tcMode);
+  }
+#endif
+
 #ifdef BOARD_40_INCH
   if (server.hasArg("bme_sda")) preferences.putInt("bme_sda", server.arg("bme_sda").toInt());
   if (server.hasArg("bme_scl")) preferences.putInt("bme_scl", server.arg("bme_scl").toInt());
@@ -3044,6 +3598,40 @@ void handleSave() {
   if (server.hasArg("t_off")) preferences.putFloat("tempOffset", server.arg("t_off").toFloat());
   if (server.hasArg("h_off")) preferences.putFloat("humOffset", server.arg("h_off").toFloat());
 
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
+  if (server.hasArg("enable_radar")) {
+    enableRadar = (server.arg("enable_radar") == "1" || server.arg("enable_radar") == "on" || server.arg("enable_radar") == "true");
+    preferences.putBool("enableRadar", enableRadar);
+  }
+
+  if (server.hasArg("r_auth")) {
+    radarAuthMode = server.arg("r_auth").toInt();
+    preferences.putInt("radarAuthMode", radarAuthMode);
+  }
+  if (server.hasArg("r_lat")) { 
+    homeLat = server.arg("r_lat").toFloat(); 
+    preferences.putFloat("radarLat", homeLat); 
+  }
+  if (server.hasArg("r_lon")) { 
+    homeLon = server.arg("r_lon").toFloat(); 
+    preferences.putFloat("radarLon", homeLon); 
+  }
+  if (server.hasArg("r_rad")) { 
+    radarRadiusDeg = server.arg("r_rad").toFloat(); 
+    if (radarRadiusDeg > 2.0f) radarRadiusDeg = 2.0f; 
+    if (radarRadiusDeg < 0.1f) radarRadiusDeg = 0.1f;
+    preferences.putFloat("radarRad", radarRadiusDeg); 
+  }
+  if (server.hasArg("r_cid")) { 
+    radarClientId = server.arg("r_cid"); 
+    preferences.putString("radarClientId", radarClientId); 
+  }
+  if (server.hasArg("r_csec") && server.arg("r_csec").length() > 0) { 
+    radarClientSecret = server.arg("r_csec"); 
+    preferences.putString("radarClientSecret", radarClientSecret); 
+  }
+#endif
+
   if (server.hasArg("theme")) {
     currentTheme = server.arg("theme").toInt();
     preferences.putInt("theme", currentTheme);
@@ -3053,6 +3641,8 @@ void handleSave() {
   if (server.hasArg("c_card")) preferences.putString("customCard", server.arg("c_card"));
   if (server.hasArg("c_text")) preferences.putString("customText", server.arg("c_text"));
   if (server.hasArg("c_acc")) preferences.putString("customAccent", server.arg("c_acc"));
+
+  preferences.end();
 
   bool changeWifi = (newSSID.length() > 0);
   if (changeWifi) {
