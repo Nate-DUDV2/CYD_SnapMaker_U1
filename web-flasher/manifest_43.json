@@ -1,0 +1,15 @@
+{
+  "name": "Waveshare Snapmaker Screen (4.3 inch)",
+  "version": "2.0.5",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        { "path": "bootloader_waveshare_43_s3.bin", "offset": 0 },
+        { "path": "partitions_waveshare_43_s3.bin", "offset": 32768 },
+        { "path": "firmware_waveshare_43_s3.bin",   "offset": 65536 }
+      ]
+    }
+  ]
+}
