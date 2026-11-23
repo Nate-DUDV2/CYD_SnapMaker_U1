@@ -13,11 +13,19 @@
 #include <FS.h>
 #include <esp_adc_cal.h>
 #include "esp_idf_version.h"
-// --- ADVANCED AUDIO LIBRARY ---
 #include <Audio.h>
-// --- GLOBAL FIRMWARE VERSION ---
-#define FW_VERSION "v2.0.5"
-// --- AUDIO CONFIGURATION ---
+
+#define FW_VERSION "v2.0.6"
+
+// Build with -DPERF_DEBUG to log how long the slow operations take.
+#ifdef PERF_DEBUG
+  #define PERF_T0(n)        unsigned long _perf_##n = millis();
+  #define PERF_LOG(n, lbl)  Serial.printf("PERF %-14s %4lu ms\n", lbl, millis() - _perf_##n);
+#else
+  #define PERF_T0(n)
+  #define PERF_LOG(n, lbl)
+#endif
+
 int currentVolume = 50; 
 bool enableAudio = false; 
 int tcMode = 0;
@@ -107,6 +115,121 @@ int tcMode = 0;
   LGFX tft;
   #define TEXT_SCALE 2.2f 
 
+#elif defined(BOARD_SUNTON_70)
+
+  #ifndef CONFIG_IDF_TARGET_ESP32S3
+    #define CONFIG_IDF_TARGET_ESP32S3 1 
+  #endif
+  
+  #define LGFX_USE_V1
+  #include <LovyanGFX.hpp>
+  #include <lgfx/v1/platforms/esp32s3/Panel_RGB.hpp>
+  #include <lgfx/v1/platforms/esp32s3/Bus_RGB.hpp>
+  #include <Wire.h>
+
+  #define SCREEN_W 800
+  #define SCREEN_H 480
+
+  #define SD_CS   10
+  #define SD_SCK  12
+  #define SD_MISO 13
+  #define SD_MOSI 11
+  SPIClass sdSPI(FSPI);
+
+  class LGFX : public lgfx::LGFX_Device {
+  public:
+    lgfx::Bus_RGB      _bus_instance;
+    lgfx::Panel_RGB    _panel_instance;
+    lgfx::Light_PWM    _light_instance;
+    lgfx::Touch_GT911  _touch_instance;
+
+    LGFX(void) {
+      {
+        auto cfg = _panel_instance.config();
+        cfg.memory_width  = 800;
+        cfg.memory_height = 480;
+        cfg.panel_width   = 800;
+        cfg.panel_height  = 480;
+        cfg.offset_x      = 0;
+        cfg.offset_y      = 0;
+        
+        cfg.rgb_order     = false;
+        cfg.invert        = true; 
+        
+        _panel_instance.config(cfg);
+      }
+      {
+        auto cfg = _panel_instance.config_detail();
+        cfg.use_psram = 1;
+        _panel_instance.config_detail(cfg);
+      }
+      {
+        auto cfg = _bus_instance.config();
+        cfg.panel = &_panel_instance;
+        
+        cfg.pin_d0  = 15; cfg.pin_d1  = 7;  cfg.pin_d2  = 6;  cfg.pin_d3  = 5;  cfg.pin_d4  = 4;
+        cfg.pin_d5  = 9;  cfg.pin_d6  = 46; cfg.pin_d7  = 3;  cfg.pin_d8  = 8;  cfg.pin_d9  = 16; cfg.pin_d10 = 1;
+        cfg.pin_d11 = 14; cfg.pin_d12 = 21; cfg.pin_d13 = 47; cfg.pin_d14 = 48; cfg.pin_d15 = 45;
+        
+        cfg.pin_henable = 41;
+        cfg.pin_vsync   = 40;
+        cfg.pin_hsync   = 39;
+        cfg.pin_pclk    = 42;
+        
+        // --- OFFICIAL 7.0" EK9716 TIMINGS (Fixes the Cut-Off) ---
+        cfg.freq_write  = 12000000;
+        
+        cfg.hsync_polarity    = 0; 
+        cfg.hsync_front_porch = 40; 
+        cfg.hsync_pulse_width = 48; 
+        cfg.hsync_back_porch  = 40;
+        
+        cfg.vsync_polarity    = 0; 
+        cfg.vsync_front_porch = 13;  
+        cfg.vsync_pulse_width = 3; 
+        cfg.vsync_back_porch  = 31;
+        
+        cfg.pclk_idle_high    = 1;
+        cfg.de_idle_high      = 0;
+        cfg.pclk_active_neg   = 0;
+        
+        _bus_instance.config(cfg);
+      }
+      _panel_instance.setBus(&_bus_instance);
+      
+      {
+        auto cfg = _light_instance.config();
+        cfg.pin_bl      = 2;
+        cfg.invert      = false;
+        cfg.freq        = 44100;
+        cfg.pwm_channel = 7;
+        _light_instance.config(cfg);
+        _panel_instance.setLight(&_light_instance);
+      }
+      {
+        auto cfg = _touch_instance.config();
+        cfg.x_min           = 0;
+        cfg.x_max           = 799;
+        cfg.y_min           = 0;
+        cfg.y_max           = 479;
+        cfg.pin_int         = -1;
+        cfg.bus_shared      = false;
+        cfg.offset_rotation = 0;
+        cfg.i2c_port        = 0;
+        cfg.i2c_addr        = 0x5D; 
+        cfg.pin_sda         = 19;
+        cfg.pin_scl         = 20;
+        cfg.freq            = 400000;
+        _touch_instance.config(cfg);
+        _panel_instance.setTouch(&_touch_instance);
+      }
+      setPanel(&_panel_instance);
+    }
+  };
+
+  LGFX tft;
+  #define TEXT_SCALE 2.2f 
+
 #else
   #include <SD.h> 
   #include <TFT_eSPI.h> 
@@ -114,7 +237,6 @@ int tcMode = 0;
   #define TEXT_SCALE 1.0f 
 
   #if defined(BOARD_CYD_28) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
-    #include <TFT_Touch.h> 
     #define TFT_BL 21
     #define SD_CS 5 
     #define RTP_DOUT 39
@@ -123,7 +245,158 @@ int tcMode = 0;
     #define RTP_CS   33
     #define SCREEN_W 320
     #define SCREEN_H 240
-    TFT_Touch touch = TFT_Touch(RTP_CS, RTP_SCK, RTP_DIN, RTP_DOUT);
+
+    // --- XPT2046 resistive touch driver (bit-banged) for the 2.8" CYD ---
+    // Replaces the TFT_Touch library, which (a) had no pressure detection,
+    // (b) clocked the chip with no delays so reads were noisy and many real
+    // presses were thrown away by its stability check, and (c) mapped the
+    // calibrated range onto 30..(res-30) px, pulling every tap up to ~25 px
+    // towards the centre (half the sidebar was unhittable).
+    #define TOUCH_Z_THRESHOLD 150   // min Z1 reading to count as a press (idle reads ~0, a finger 400-1300)
+    #define CAL_MARGIN        20    // calibration crosshairs sit this far in from each edge
+
+    struct CydTouch {
+      // Raw readings at the crosshair positions. Direction is preserved
+      // (no min/max sorting), so mirrored panels calibrate correctly.
+      int32_t x0 = 0, x1 = 4095, y0 = 0, y1 = 4095;
+      bool swapXY = false;
+      // Two wirings exist for "2.8in ESP32" boards:
+      //  - classic CYD (ESP32-2432S028R): XPT2046 on its own pins
+      //    CLK 25 / DIN 32 / DOUT 39 / CS 33 (bit-banged)
+      //  - ESP32-32E style (e.g. Hosyond): XPT2046 shares the display's HSPI
+      //    bus (CLK 14 / MOSI 13 / MISO 12) with its own CS 33
+      // begin() probes both and uses whichever has a real chip answering.
+      bool shared = false;
+      bool detected = false;
+
+      // select()/deselect() only claim the shared SPI bus. Chip-select is
+      // toggled around EVERY conversion inside xfer(): the XPT2046 on these
+      // boards only answers the first command after CS goes low.
+      void select() {
+        if (shared) tft.getSPIinstance().beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
+      }
+      void deselect() {
+        if (shared) tft.getSPIinstance().endTransaction();
+      }
+
+      // A real XPT2046 gives z1~0 / z2~4095 when idle, or sane mid-range values
+      // when pressed. Missing chips read as constant junk (all 0, all 4095, ...).
+      bool probe() {
+        int ok = 0;
+        for (int i = 0; i < 8; i++) {
+          select();
+          int t = readTemp();
+          xfer(0x90);
+          deselect();
+          if (t > 200 && t < 3900) ok++;
+          delay(5);
+        }
+        return ok >= 6;
+      }
+
+      void begin() {
+        pinMode(RTP_CS, OUTPUT); digitalWrite(RTP_CS, HIGH);
+        shared = true;                       // try the shared display bus first
+        if (probe()) { detected = true; Serial.println("Touch: XPT2046 on shared display SPI bus (ESP32-32E wiring)"); return; }
+        shared = false;
+        pinMode(RTP_SCK, OUTPUT);  digitalWrite(RTP_SCK, LOW);
+        pinMode(RTP_DIN, OUTPUT);  digitalWrite(RTP_DIN, LOW);
+        pinMode(RTP_DOUT, INPUT);
+        if (probe()) { detected = true; Serial.println("Touch: XPT2046 on dedicated pins (classic CYD wiring)"); return; }
+        // Nothing passed the probe: fall back to the classic wiring (what the
+        // firmware always assumed) rather than disabling touch entirely.
+        detected = true;
+        Serial.println("Touch: probe inconclusive, using classic CYD wiring");
+      }
+
+      uint16_t xfer(uint8_t cmd) {
+        if (shared) {
+          SPIClass &bus = tft.getSPIinstance();
+          digitalWrite(RTP_CS, LOW);
+          bus.transfer(cmd);
+          uint16_t v = (bus.transfer16(0) >> 3) & 0x0FFF;
+          digitalWrite(RTP_CS, HIGH);
+          return v;
+        }
+        digitalWrite(RTP_CS, LOW);
+        for (int i = 7; i >= 0; i--) {
+          digitalWrite(RTP_DIN, (cmd >> i) & 1);
+          digitalWrite(RTP_SCK, HIGH); delayMicroseconds(1);
+          digitalWrite(RTP_SCK, LOW);  delayMicroseconds(1);
+        }
+        uint16_t r = 0;
+        for (int i = 11; i >= 0; i--) {
+          digitalWrite(RTP_SCK, HIGH); delayMicroseconds(1);
+          digitalWrite(RTP_SCK, LOW);  delayMicroseconds(1);
+          r |= (digitalRead(RTP_DOUT) << i);
+        }
+        // Clock out the 3 trailing zero bits + 1 spare so each conversion is the
+        // full 24 clocks the XPT2046 expects. With only 20 clocks every command
+        // after the first one in a CS cycle was misaligned and read garbage.
+        for (int i = 0; i < 4; i++) {
+          digitalWrite(RTP_SCK, HIGH); delayMicroseconds(1);
+          digitalWrite(RTP_SCK, LOW);  delayMicroseconds(1);
+        }
+        digitalWrite(RTP_CS, HIGH);
+        digitalWrite(RTP_DIN, LOW);
+        return r;
+      }
+
+      // Z1 is ~0 with nothing touching and rises with finger pressure. (The
+      // common "z1 + 4095 - z2" formula reads ~4095 at idle on some panels.)
+      int pressure() {
+        return xfer(0xB1);
+      }
+
+      // Internal temperature sensor: a live chip returns a mid-range value,
+      // an empty bus returns 0 or 4095.
+      int readTemp() {
+        xfer(0x87);              // first read powers up the reference
+        return xfer(0x87);
+      }
+
+      // Filtered raw readings (a = X channel, b = Y channel) while pressed.
+      bool readRaw(int &a, int &b) {
+        if (!detected) return false;
+        select();
+        if (pressure() < TOUCH_Z_THRESHOLD) {
+          xfer(0x90); deselect();
+          return false;
+        }
+        xfer(0xD1);                          // discard: lets the ADC settle
+        const int N = 7;
+        int xs[N], ys[N];
+        for (int i = 0; i < N; i++) { xs[i] = xfer(0xD1); ys[i] = xfer(0x91); }
+        bool stillPressed = pressure() >= TOUCH_Z_THRESHOLD;  // reject lift-off samples
+        xfer(0x90);                          // power down, re-enable PENIRQ
+        deselect();
+        if (!stillPressed) return false;
+
+        // Median-ish filter: sort and average the middle three samples.
+        for (int i = 1; i < N; i++) {
+          int vx = xs[i], vy = ys[i], j = i - 1, k = i - 1;
+          while (j >= 0 && xs[j] > vx) { xs[j + 1] = xs[j]; j--; } xs[j + 1] = vx;
+          while (k >= 0 && ys[k] > vy) { ys[k + 1] = ys[k]; k--; } ys[k + 1] = vy;
+        }
+        a = (xs[2] + xs[3] + xs[4]) / 3;
+        b = (ys[2] + ys[3] + ys[4]) / 3;
+        return (a > 0 && a < 4095 && b > 0 && b < 4095);
+      }
+
+      bool getXY(int &x, int &y) {
+        int a, b;
+        if (!readRaw(a, b)) return false;
+        if (x1 == x0 || y1 == y0) return false;
+        int32_t sx = swapXY ? b : a;
+        int32_t sy = swapXY ? a : b;
+        x = CAL_MARGIN + (sx - x0) * (SCREEN_W - 1 - 2 * CAL_MARGIN) / (x1 - x0);
+        y = CAL_MARGIN + (sy - y0) * (SCREEN_H - 1 - 2 * CAL_MARGIN) / (y1 - y0);
+        x = constrain(x, 0, SCREEN_W - 1);
+        y = constrain(y, 0, SCREEN_H - 1);
+        return true;
+      }
+    };
+    CydTouch touch;
   #elif defined(BOARD_40_INCH)
     #include <Wire.h>
     #define TFT_BL 27
@@ -137,8 +410,7 @@ int tcMode = 0;
   #endif
 #endif
 
-// ---> BME280 Environmental Sensor <---
-#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
+#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43) || defined(BOARD_SUNTON_70)
   #include <Wire.h>
   #include <Adafruit_BME280.h>
   Adafruit_BME280 bme;
@@ -155,21 +427,24 @@ int tcMode = 0;
   }
 #endif
 
-// ---> MAX31855 Thermocouple Sensor (4.0" and 4.3" Screens) <---
-#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
+#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43) || defined(BOARD_SUNTON_70)
   #include <Adafruit_MAX31855.h>
 
-  #ifdef BOARD_WAVESHARE_43
-    #define MAX_CLK  6
-    #define MAX_CS   16
-    #define MAX_SO   20
-  #else // BOARD_40_INCH (Using SPI JST Port: IO18 SCK, IO21 CS, IO19 MISO)
-    #define MAX_CLK  18
-    #define MAX_CS   21
-    #define MAX_SO   19
+  // The MAX31855 shares the SD card's hardware SPI bus (SCK + MISO) and only
+  // needs its own chip-select. The old bit-banged pins collided with other
+  // hardware: on the Sunton 7" GPIO 6/16 are RGB data lines and GPIO 20 is the
+  // GT911 touch SCL; on the Waveshare GPIO 20 is USB D+; on the 4.0" CYD the
+  // bit-banged CLK/SO were the SD card's own SCK/MISO.
+  //   Wiring: MAX31855 SCK -> SD_SCK, SO -> SD_MISO, CS -> MAX_CS
+  #if defined(BOARD_SUNTON_70)
+    #define MAX_CS   17   // Free GPIO on the Sunton expansion header
+  #elif defined(BOARD_WAVESHARE_43)
+    #define MAX_CS   6    // Sensor/AD header pin on the Waveshare 4.3"
+  #else
+    #define MAX_CS   21   // 4.0" CYD: same wiring as before (SCK 18, SO 19)
   #endif
 
-  Adafruit_MAX31855 thermocouple(MAX_CLK, MAX_CS, MAX_SO);
+  Adafruit_MAX31855 thermocouple(MAX_CS, &sdSPI);
   bool max31855Ready = false;
 #endif
 
@@ -196,6 +471,8 @@ float humOffset = 0.0;
 
 unsigned long lastUpdate = 0;
 const int updateInterval = 2000;
+const int offlineRetryInterval = 10000;  // poll less often while the printer is unreachable
+bool printerOffline = false;
 String currentState = "Offline";
 String currentFile = "Idle";
 float bedTemp = 0.0, bedTarget = 0.0;
@@ -204,13 +481,15 @@ float toolTarget[4] = {0,0,0,0};
 int printSpeed = 100, fanSpeed = 0;
 float printProgress = 0.0;
 int printDuration = 0; 
+int slicerEstimate = 0;          // seconds, from the gcode file's slicer metadata (0 = unknown)
+String estimateForFile = "";     // file the cached slicer estimate belongs to
 int activeTool = -1;
 float moveDist = 10.0; 
 
 String filType[4] = {"PLA", "PLA", "PLA-CF", "WOOD"}; 
 uint16_t filColor[4] = {0x2104, 0x07FF, 0x3186, 0xA285}; 
 bool toolAttached[4] = {true, false, false, false}; 
-bool toolLoaded[4] = {true, true, true, true};      
+bool toolLoaded[4] = {true, true, true, true};     
 
 const String FIL_TYPES[] = {"PLA", "PETG", "ABS", "TPU", "ASA", "PC", "NYLON", "PLA-CF", "PETG-CF", "WOOD"};
 const uint16_t FIL_COLORS[] = {TFT_WHITE, TFT_RED, TFT_BLUE, TFT_GREEN, TFT_YELLOW, TFT_ORANGE, TFT_CYAN, TFT_MAGENTA, 0x2104, 0xA285};
@@ -226,12 +505,11 @@ int fileScrollIndex = 0;
 String selectedFile = "";
 int printTabSource = 0;
 
-// --- AIRSPACE SLICER GLOBALS ---
 bool enableRadar = false;
-int radarAuthMode = 0; // 0 = Anonymous, 1 = OAuth2
+int radarAuthMode = 0;
 float homeLat = 41.9742; 
 float homeLon = -87.9073; 
-float radarRadiusDeg = 0.5; // ~35 miles 
+float radarRadiusDeg = 0.5; 
 float scanAngle = 0.0;
 float prevScanAngle = -1.0;
 unsigned long lastSweepAnim = 0;
@@ -311,8 +589,9 @@ void updateKeyboardInputBox();
 void drawColorPickerModal(int idx);
 void drawPrintOptionsModal();
 void updateDynamicUI();
-void fetchPrinterData();
 void sendGcode(String command);
+void startPrinterPolling();
+bool applyPrinterSnapshot();
 void handleRoot();
 void handleAudio();
 void handleTech();
@@ -331,10 +610,7 @@ void applyTheme();
 float getBatteryVoltage();
 int getBatteryPercentage(float volts);
 
-// ==========================================
-// --- I2S ESP8266Audio ASYNC PLAYER ---
-// ==========================================
-#ifdef BOARD_WAVESHARE_43
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_SUNTON_70)
   Audio audio; 
 #else
   Audio audio(true, I2S_DAC_CHANNEL_LEFT_EN); 
@@ -353,7 +629,7 @@ void audioTask(void *parameter) {
   audioQueue = xQueueCreate(10, sizeof(struct audioMessage));
   audioMessage msg;
 
-#ifndef BOARD_WAVESHARE_43
+#if !defined(BOARD_WAVESHARE_43) && !defined(BOARD_SUNTON_70)
   pinMode(AUDIO_EN_PIN, OUTPUT);
   digitalWrite(AUDIO_EN_PIN, LOW);
 #endif
@@ -377,7 +653,6 @@ void audioTask(void *parameter) {
   }
 }
 
-// --- BATTERY HELPER FUNCTIONS ---
 #define PIN_BAT_ADC 34
 float getBatteryVoltage() {
   esp_adc_cal_characteristics_t adc_chars;
@@ -453,7 +728,7 @@ void applyTheme() {
 
 String urlEncode(String str) {
   String encoded = "";
-  for (size_t i = 0; i < str.length(); i++) { // FIXED: changed size_size_t to size_t
+  for (size_t i = 0; i < str.length(); i++) {
     char c = str.charAt(i);
     if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
       encoded += c;
@@ -505,7 +780,7 @@ void drawBootLogo() {
   tft.setTextColor(ACCENT_CYAN);
   tft.setTextDatum(MC_DATUM);
   
-#ifdef BOARD_WAVESHARE_43
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_SUNTON_70)
   tft.drawString("ADVANCED", SCREEN_W/2, PY(90), 4); 
 #else
   tft.drawString("CYD", SCREEN_W/2, PY(90), 4); 
@@ -536,13 +811,8 @@ void configModeCallback(WiFiManager *myWiFiManager) {
 
 bool getTouchCoord(int &x, int &y) {
 #if defined(BOARD_CYD_28) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
-  if (touch.Pressed()) {
-    x = touch.X();
-    y = touch.Y();
-    return true;
-  }
-  return false;
-#elif defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
+  return touch.getXY(x, y);
+#elif defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43) || defined(BOARD_SUNTON_70)
   uint16_t ux = 0, uy = 0;
   if (tft.getTouch(&ux, &uy)) {
     x = ux;
@@ -574,9 +844,13 @@ void loadFilesFromSD() {
 void fetchKlipperFiles() {
   if (!sdCardReady) return;
   HTTPClient http;
-  http.begin("http://" + String(printerIP) + ":7125/server/files/list?root=gcodes");
-  int httpCode = http.GET();
-  
+  int httpCode = -1;
+  if (!printerOffline) {
+    http.setConnectTimeout(800);
+    http.setTimeout(3000);
+    http.begin("http://" + String(printerIP) + ":7125/server/files/list?root=gcodes");
+    httpCode = http.GET();
+  }
   if (httpCode == 200) {
     File tmpFile = SD.open("/k_files.tmp", FILE_WRITE);
     if (tmpFile) {
@@ -616,8 +890,10 @@ void fetchKlipperFiles() {
 
 void syncFilamentToKlipper(int tIdx) {
   blockSyncUntil = millis() + 5000;
+  if (printerOffline) return;
   HTTPClient http;
   
+  http.setConnectTimeout(800);
   http.setTimeout(1500); 
   http.begin("http://" + String(printerIP) + ":7125/printer/filament_detect/set");
   http.addHeader("Content-Type", "application/json");
@@ -672,7 +948,7 @@ bool uploadFileToKlipper(String localPath, String remoteName, int yOffset) {
       uploaded += c;
       
       if (fileLen > 0) {
-          int p = (uploaded * 100) / fileLen;
+          int p = (int)(((uint64_t)uploaded * 100) / fileLen);
           if (p > lastP && p <= 100) {
               tft.fillRect(PX(32), PY(yOffset + 2), (int)((p / 100.0) * PX(256)), PY(16), ACCENT_CYAN);
               tft.setTextColor(BG_COLOR);
@@ -687,17 +963,25 @@ bool uploadFileToKlipper(String localPath, String remoteName, int yOffset) {
   
   free(buf);
   client.print(tail);
-  
-  long timeout = millis() + 5000;
-  while(client.connected() && millis() < timeout) {
-      if(client.available()) {
-          String line = client.readStringUntil('\n');
-          if (line == "\r") break;
-      }
-  }
   f.close();
+
+  // Moonraker may need a while to process a large upload before replying.
+  int statusCode = 0;
+  unsigned long deadline = millis() + 30000;
+  while (client.connected() && millis() < deadline) {
+      if (client.available()) {
+          String statusLine = client.readStringUntil('\n');   // "HTTP/1.1 201 Created"
+          int sp = statusLine.indexOf(' ');
+          if (sp > 0) statusCode = statusLine.substring(sp + 1, sp + 4).toInt();
+          break;
+      }
+      server.handleClient();
+      delay(10);
+  }
   client.stop();
-  return true;
+
+  if (uploaded != fileLen) return false;
+  return (statusCode >= 200 && statusCode < 300);
 }
 
 void launchPatchedPrint(String filename, int source, bool bBed, bool bTime, bool bAdv, int t0_map) {
@@ -713,6 +997,12 @@ void launchPatchedPrint(String filename, int source, bool bBed, bool bTime, bool
       tft.drawString("Patching File & Variables...", SCREEN_W/2, PY(70), 1);
       if (!SD.exists("/dump_zone")) SD.mkdir("/dump_zone");
       
+      // Files can live in printer subfolders ("sub/part.gcode"). The patched
+      // copy goes flat into /dump_zone and the printer's gcode root, so drop
+      // the directory part (SD.open can't create missing folders).
+      int slashIdx = targetFilename.lastIndexOf('/');
+      if (slashIdx >= 0) targetFilename = targetFilename.substring(slashIdx + 1);
+
       int extIdx = targetFilename.lastIndexOf('.');
       if (extIdx > 0) targetFilename = targetFilename.substring(0, extIdx) + "_screen" + targetFilename.substring(extIdx);
       else targetFilename += "_screen.gcode";
@@ -733,6 +1023,7 @@ void launchPatchedPrint(String filename, int source, bool bBed, bool bTime, bool
       uint32_t totalBytes = 0;
       uint32_t processedBytes = 0;
       int lastP = -1;
+      bool sourceOk = false;
 
       tft.drawRect(PX(30), PY(90), PX(260), PY(20), tft.color565(50, 55, 65));
 
@@ -741,8 +1032,9 @@ void launchPatchedPrint(String filename, int source, bool bBed, bool bTime, bool
           http.begin("http://" + String(printerIP) + ":7125/server/files/gcodes/" + urlEncode(filename));
           int httpCode = http.GET();
           if (httpCode == 200) {
-              totalBytes = http.getSize();
-              if (totalBytes < 0) totalBytes = 0; 
+              sourceOk = true;
+              int reportedSize = http.getSize();   // -1 when chunked / unknown
+              totalBytes = (reportedSize > 0) ? (uint32_t)reportedSize : 0;
               
               WiFiClient *stream = http.getStreamPtr();
               String line; line.reserve(256);
@@ -788,7 +1080,7 @@ void launchPatchedPrint(String filename, int source, bool bBed, bool bTime, bool
                       }
                       
                       if (totalBytes > 0) {
-                          int p = (processedBytes * 100) / totalBytes;
+                          int p = (int)(((uint64_t)processedBytes * 100) / totalBytes);
                           if (p > lastP && p <= 100) {
                               tft.fillRect(PX(32), PY(92), (int)((p / 100.0) * PX(256)), PY(16), ACCENT_CYAN);
                               tft.setTextColor(BG_COLOR);
@@ -805,6 +1097,7 @@ void launchPatchedPrint(String filename, int source, bool bBed, bool bTime, bool
       } else { 
           File inFile = SD.open("/" + filename, FILE_READ);
           if (inFile) {
+              sourceOk = true;
               totalBytes = inFile.size();
               String line; line.reserve(256);
               uint8_t *fastBuf = (uint8_t*)malloc(4096);
@@ -848,7 +1141,7 @@ void launchPatchedPrint(String filename, int source, bool bBed, bool bTime, bool
                   }
                   
                   if (totalBytes > 0) {
-                      int p = (processedBytes * 100) / totalBytes;
+                      int p = (int)(((uint64_t)processedBytes * 100) / totalBytes);
                       if (p > lastP && p <= 100) {
                           tft.fillRect(PX(32), PY(92), (int)((p / 100.0) * PX(256)), PY(16), ACCENT_CYAN);
                           tft.setTextColor(BG_COLOR);
@@ -863,6 +1156,13 @@ void launchPatchedPrint(String filename, int source, bool bBed, bool bTime, bool
           }
       }
       outFile.close();
+
+      // Never upload/print a missing or truncated copy.
+      if (!sourceOk || (totalBytes > 0 && processedBytes < totalBytes)) {
+          SD.remove("/dump_zone/" + targetFilename);
+          showToast("Error", sourceOk ? "Download incomplete!" : "Could not read source file!", true);
+          activeModal = 0; currentTab = 0; forceRedrawForToast = true; return;
+      }
 
       tft.setTextColor(TFT_WHITE, BG_COLOR);
       tft.drawString("Uploading Patched File...", SCREEN_W/2, PY(130), 1);
@@ -901,7 +1201,7 @@ void launchPatchedPrint(String filename, int source, bool bBed, bool bTime, bool
   forceRedrawForToast = true;
 }
 
-#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL) || defined(BOARD_SUNTON_70)
 
 void drawAirplaneIcon(int x, int y, float angle, uint16_t color) {
     float rad = (angle - 90) * PI / 180.0;
@@ -1167,25 +1467,34 @@ void updateRadar() {
 
 void setup() {
   Serial.begin(115200);
+  delay(100);
+  Serial.printf("\n--- BOOT DIAGNOSTIC ---\nPSRAM Total Size: %d bytes\n-----------------------\n", ESP.getPsramSize());
 
-#ifndef BOARD_WAVESHARE_43
+#if !defined(BOARD_WAVESHARE_43) && !defined(BOARD_SUNTON_70)
   pinMode(TFT_BL, OUTPUT);
   digitalWrite(TFT_BL, HIGH);
 #endif
 
   tft.init();
+  tft.setSwapBytes(true); // <--- ADDED FIX FOR THE GREEN TINT
+
+#if defined(BOARD_SUNTON_70)
+  pinMode(2, OUTPUT);
+  digitalWrite(2, HIGH); 
+  tft.setBrightness(150);
+#endif
 
   preferences.begin("printer", false);
   
   int screenRotation = preferences.getInt("rotation", 3);
   
-#ifdef BOARD_WAVESHARE_43
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_SUNTON_70)
   if (screenRotation == 3) screenRotation = 0; 
 #endif
 
   tft.setRotation(screenRotation);
 
-#ifndef BOARD_WAVESHARE_43
+#if !defined(BOARD_WAVESHARE_43) && !defined(BOARD_SUNTON_70)
   invertDisplay = preferences.getBool("invertDisplay", false);
   tft.invertDisplay(invertDisplay);
 #endif
@@ -1201,10 +1510,10 @@ void setup() {
   envMode = preferences.getInt("envMode", 0); 
   useFahrenheit = preferences.getBool("useFahrenheit", false); 
   tempOffset = preferences.getFloat("tempOffset", 0.0); 
-  humOffset = preferences.getFloat("humOffset", 0.0);    
+  humOffset = preferences.getFloat("humOffset", 0.0);   
   enableAudio = preferences.getBool("enableAudio", false);
   
-#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL) || defined(BOARD_SUNTON_70)
   enableRadar = preferences.getBool("enableRadar", false);
   homeLat = preferences.getFloat("radarLat", 41.9742f);
   homeLon = preferences.getFloat("radarLon", -87.9073f);
@@ -1214,31 +1523,37 @@ void setup() {
   radarClientSecret = preferences.getString("radarClientSecret", "");
 #endif
 
-#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
+#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43) || defined(BOARD_SUNTON_70)
   #ifdef BOARD_WAVESHARE_43
     Wire.begin(8, 9);
+  #elif defined(BOARD_SUNTON_70)
+    // Disabled to prevent I2C collision with GT911 Touch Controller (GPIO 19/20)
   #else
     bmeSDA = 32;
     bmeSCL = 25;
     Wire.begin(bmeSDA, bmeSCL); 
   #endif
   
-  for (int i = 0; i < 4; i++) {
-    delay(500); 
-    if (pingBME()) {
-      bmeReady = true;
-      Serial.println("BME280 connected successfully at boot!");
-      break; 
+  #if defined(BOARD_SUNTON_70)
+    // No free I2C bus on the Sunton: GPIO 19/20 belong to the GT911 touch
+    // controller (I2C port 0), and Wire's default S3 pins (8/9) are RGB data
+    // lines. Probing the BME280 here would disturb the touch/display.
+    bmeReady = false;
+  #else
+    // Only probe when the env sensor is enabled (saves ~2s of boot time).
+    if (preferences.getInt("envMode", 0) > 0) {
+      for (int i = 0; i < 4; i++) {
+        delay(500);
+        if (pingBME()) {
+          bmeReady = true;
+          Serial.println("BME280 connected successfully at boot!");
+          break;
+        }
+      }
     }
-  }
-
-  // MAX31855 Thermocouple Startup Check
-  if (thermocouple.begin()) {
-    max31855Ready = true;
-    Serial.println("MAX31855 Thermocouple initialized!");
-  } else {
-    Serial.println("MAX31855 Thermocouple NOT detected.");
-  }
+  #endif
+  // Thermocouple is initialised later (after the SD SPI bus is up), and only
+  // when tcMode is enabled.
 #endif
 
   applyTheme();
@@ -1246,7 +1561,39 @@ void setup() {
   drawBootLogo();
 
 #if defined(BOARD_CYD_28) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
-  touch.setRotation(screenRotation);
+  touch.begin();
+#ifdef TOUCH_DEBUG
+  // Diagnostic: show raw XPT2046 readings from BOTH wirings, on screen + serial, for 60s.
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextSize(1);
+  for (unsigned long t0 = millis(); millis() - t0 < 60000; ) {
+    int v[2][5];
+    for (int m = 0; m < 2; m++) {
+      touch.shared = (m == 1);
+      touch.select();
+      v[m][0] = touch.xfer(0xB1); v[m][1] = touch.xfer(0xC1);
+      v[m][2] = touch.xfer(0xD1); v[m][3] = touch.xfer(0x91);
+      v[m][4] = touch.readTemp();
+      touch.xfer(0x90);
+      touch.deselect();
+    }
+    touch.shared = false;
+    int irq = digitalRead(36);
+    Serial.printf("TDBG CLASSIC z1=%4d z2=%4d x=%4d y=%4d | SHARED z1=%4d z2=%4d x=%4d y=%4d | irq36=%d tempC=%d tempS=%d\n",
+                  v[0][0], v[0][1], v[0][2], v[0][3], v[1][0], v[1][1], v[1][2], v[1][3], irq, v[0][4], v[1][4]);
+    char buf[64];
+    tft.setTextColor(TFT_YELLOW, TFT_BLACK); tft.setTextDatum(TL_DATUM);
+    tft.drawString("TOUCH TEST - press & hold, then release", 5, 5, 2);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    snprintf(buf, sizeof(buf), "CLASSIC z1=%4d z2=%4d   ", v[0][0], v[0][1]); tft.drawString(buf, 5, 40, 2);
+    snprintf(buf, sizeof(buf), "        x=%4d  y=%4d   ", v[0][2], v[0][3]);  tft.drawString(buf, 5, 60, 2);
+    snprintf(buf, sizeof(buf), "SHARED  z1=%4d z2=%4d   ", v[1][0], v[1][1]); tft.drawString(buf, 5, 100, 2);
+    snprintf(buf, sizeof(buf), "        x=%4d  y=%4d   ", v[1][2], v[1][3]);  tft.drawString(buf, 5, 120, 2);
+    snprintf(buf, sizeof(buf), "T=%d/%d IRQ=%d %2lus left  ", v[0][4], v[1][4], irq, (60000 - (millis() - t0)) / 1000); tft.drawString(buf, 5, 160, 2);
+    delay(150);
+  }
+  tft.setTextSize(TEXT_SCALE);
+#endif
   if (SD.begin(SD_CS)) {
     sdCardReady = true;
     sdCardTotal = SD.totalBytes() / (1024 * 1024); 
@@ -1263,10 +1610,12 @@ void setup() {
     sdCardUsed = SD.usedBytes() / (1024 * 1024);
     loadFilesFromSD();
   }
-#elif defined(BOARD_WAVESHARE_43)
+#elif defined(BOARD_WAVESHARE_43) || defined(BOARD_SUNTON_70)
   isCalibrated = true; 
   sdSPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+  #ifdef BOARD_WAVESHARE_43
   tft._light_instance.write_pin(4, false);
+  #endif
   delay(20);
 
   if (SD.begin(SD_CS, sdSPI, 25000000)) {
@@ -1283,8 +1632,7 @@ void setup() {
 
 tcMode = preferences.getInt("tcMode", 0);
 
-#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
-  // MAX31855 Thermocouple Startup Check
+#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43) || defined(BOARD_SUNTON_70)
   if (tcMode > 0) {
     if (thermocouple.begin()) {
       max31855Ready = true;
@@ -1294,7 +1642,6 @@ tcMode = preferences.getInt("tcMode", 0);
     }
   }
 #endif
-
 
   if (enableAudio && sdCardReady) {
       xTaskCreatePinnedToCore(audioTask, "AudioTask", 8192, NULL, 1, NULL, 0);
@@ -1325,13 +1672,19 @@ tcMode = preferences.getInt("tcMode", 0);
   
   bool loadedFromSD = false;
 #if defined(BOARD_CYD_28) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
+  // Calibration format v2 (new touch driver). Old v1 data used a different
+  // mapping, so it is ignored and the user is asked to calibrate once.
+  // Calibration is only valid for the rotation it was taken in.
+  isCalibrated = false;
   if (sdCardReady && SD.exists("/calibration.json")) {
     File file = SD.open("/calibration.json", FILE_READ);
     if (file) {
       JsonDocument doc;
       if (!deserializeJson(doc, file)) {
-        if(doc["is_40"].isNull()) {
-            touch.setCal(doc["calXMin"], doc["calXMax"], doc["calYMin"], doc["calYMax"], SCREEN_W, SCREEN_H, doc["swapXY"]);
+        if (doc["v"] == 2 && doc["rot"] == screenRotation) {
+            touch.x0 = doc["x0"]; touch.x1 = doc["x1"];
+            touch.y0 = doc["y0"]; touch.y1 = doc["y1"];
+            touch.swapXY = doc["swap"];
             loadedFromSD = true;
             isCalibrated = true;
         }
@@ -1339,18 +1692,13 @@ tcMode = preferences.getInt("tcMode", 0);
       file.close();
     }
   }
-  if (!loadedFromSD) {
-    isCalibrated = preferences.getBool("isCalibrated", false);
-    if (isCalibrated) {
-      int hmin = preferences.getInt("calXMin", 495);
-      int hmax = preferences.getInt("calXMax", 3398);
-      int vmin = preferences.getInt("calYMin", 721);
-      int vmax = preferences.getInt("calYMax", 3448);
-      bool xyswap = preferences.getBool("swapXY", true);
-      touch.setCal(hmin, hmax, vmin, vmax, SCREEN_W, SCREEN_H, xyswap);
-    } else {
-      touch.setCal(495, 3398, 721, 3448, SCREEN_W, SCREEN_H, 1);
-    }
+  if (!loadedFromSD && preferences.getBool("tcV2", false) && preferences.getInt("tcRot", -1) == screenRotation) {
+    touch.x0 = preferences.getInt("tcX0", 0);
+    touch.x1 = preferences.getInt("tcX1", 4095);
+    touch.y0 = preferences.getInt("tcY0", 0);
+    touch.y1 = preferences.getInt("tcY1", 4095);
+    touch.swapXY = preferences.getBool("tcSwap", false);
+    isCalibrated = true;
   }
 #elif defined(BOARD_40_INCH)
   if (sdCardReady && SD.exists("/calibration.json")) {
@@ -1402,7 +1750,9 @@ tcMode = preferences.getInt("tcMode", 0);
     preferences.putString("printer_name", printerName);
   }
 
-  preferences.end();
+  // NOTE: Preferences stays open for the lifetime of the firmware. Calling
+  // preferences.end() here made every later put*() (on-screen IP/name edits,
+  // filament changes, touch calibration) silently fail.
 
   if (MDNS.begin(mdnsName)) {
     MDNS.addService("http", "tcp", 80);
@@ -1486,6 +1836,7 @@ tcMode = preferences.getInt("tcMode", 0);
   }, handleFileUpload);
 
   server.begin();
+  startPrinterPolling();
   fetchKlipperFiles();
 
   if (!isCalibrated) {
@@ -1498,19 +1849,34 @@ tcMode = preferences.getInt("tcMode", 0);
 }
 
 void loop() {
+#ifdef PERF_DEBUG
+  static unsigned long perfLoopStart = 0, perfLoopMax = 0, perfLoops = 0, perfWindow = 0;
+  if (perfLoopStart) { unsigned long d = millis() - perfLoopStart; if (d > perfLoopMax) perfLoopMax = d; perfLoops++; }
+  if (millis() - perfWindow > 5000) {
+    Serial.printf("PERF loop: %lu iterations/5s, slowest %lu ms\n", perfLoops, perfLoopMax);
+    perfWindow = millis(); perfLoopMax = 0; perfLoops = 0;
+  }
+  perfLoopStart = millis();
+#endif
   server.handleClient(); 
 
-#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL) || defined(BOARD_SUNTON_70)
   updateRadar();
 #endif
 
   int touchX = 0, touchY = 0;
-  if (getTouchCoord(touchX, touchY)) {
+  PERF_T0(touch)
+  bool perfTouched = getTouchCoord(touchX, touchY);
+#ifdef PERF_DEBUG
+  { static unsigned long cnt = 0, sum = 0, mx = 0; unsigned long d = millis() - _perf_touch; sum += d; if (d > mx) mx = d;
+    if (++cnt >= 200) { Serial.printf("PERF touch read avg %lu ms, max %lu ms\n", sum / cnt, mx); cnt = 0; sum = 0; mx = 0; } }
+  if (perfTouched) Serial.printf("PERF touch at %d,%d\n", touchX, touchY);
+#endif
+  if (perfTouched) {
 
-    if (toastExpireTime > 0) {
-        lastTouchTime = millis();
-    }
-    else if (millis() - lastTouchTime > 250) { 
+    // Touches are no longer ignored while a toast is showing (that locked the
+    // screen for 3s after every button press).
+    if (millis() - lastTouchTime > 250) { 
       bool modalForceClosed = false;
 
       if (activeModal > 0 && touchX < PX(42)) {
@@ -1586,22 +1952,22 @@ void loop() {
               closedModal = true; handledTouch = true;
           } else { closedModal = true; }
         }
-        else if (activeModal == 9) { // Cancel Print Confirmation Modal
+        else if (activeModal == 9) { 
           if (touchY > PY(140) && touchY < PY(180)) {
               if (touchX > PX(60) && touchX < PX(160)) { 
-                  closedModal = true; handledTouch = true; // NO button
+                  closedModal = true; handledTouch = true; 
               }
               else if (touchX > PX(180) && touchX < PX(280)) { 
                   sendGcode("CANCEL_PRINT"); 
                   showToast("Command", "Cancelling...", true);
-                  closedModal = true; handledTouch = true; // YES button
+                  closedModal = true; handledTouch = true; 
               }
           } else { closedModal = true; }
         }
-        else if (activeModal == 14) { // Pause / Resume Confirmation Modal
+        else if (activeModal == 14) { 
           if (touchY > PY(140) && touchY < PY(180)) {
               if (touchX > PX(60) && touchX < PX(160)) { 
-                  closedModal = true; handledTouch = true; // NO button
+                  closedModal = true; handledTouch = true; 
               }
               else if (touchX > PX(180) && touchX < PX(280)) { 
                   if (currentState == "paused") { 
@@ -1611,7 +1977,7 @@ void loop() {
                     sendGcode("PAUSE"); 
                     showToast("Command", "Pausing print..."); 
                   }
-                  closedModal = true; handledTouch = true; // YES button
+                  closedModal = true; handledTouch = true; 
               }
           } else { closedModal = true; }
         }
@@ -1901,7 +2267,7 @@ void loop() {
              else if (currentTab == 2) drawMoveTab();
              else if (currentTab == 3) drawPrintTab();
              else if (currentTab == 4) drawSettingsTab();
-#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL) || defined(BOARD_SUNTON_70)
              else if (currentTab == 5 && enableRadar) {
                  lastRadarApiCall = 0;
                  drawRadarTab();
@@ -1914,7 +2280,7 @@ void loop() {
 
       // --- SIDEBAR TOUCH CALCULATION FOR ALL BOARDS ---
       if (touchX < PX(42)) {
-#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL) || defined(BOARD_SUNTON_70)
         int numTabs = enableRadar ? 6 : 5;
 #else
         int numTabs = 5;
@@ -1922,6 +2288,7 @@ void loop() {
         int tappedTab = touchY / (SCREEN_H / numTabs); 
         if (tappedTab < numTabs) {
           if (tappedTab != currentTab || modalForceClosed) {
+            PERF_T0(tab)
             currentTab = tappedTab;
             
             if (currentTab == 3) {
@@ -1938,7 +2305,7 @@ void loop() {
             else if (currentTab == 2) drawMoveTab();
             else if (currentTab == 3) drawPrintTab();
             else if (currentTab == 4) drawSettingsTab();
-#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL) || defined(BOARD_SUNTON_70)
             else if (currentTab == 5 && enableRadar) {
                 lastRadarApiCall = 0; 
                 drawRadarTab();
@@ -1946,6 +2313,7 @@ void loop() {
 #endif
             
             updateDynamicUI(); 
+            PERF_LOG(tab, "tab switch")
           }
         }
         lastTouchTime = millis();
@@ -2051,7 +2419,7 @@ void loop() {
             lastTouchTime = millis();
         }
         else if (touchX > PX(48) && touchX < PX(178) && touchY > PY(175) && touchY < PY(215)) {
-#ifndef BOARD_WAVESHARE_43
+#if !defined(BOARD_WAVESHARE_43) && !defined(BOARD_SUNTON_70)
           touchCalibrate();
           tft.fillScreen(BG_COLOR);
           drawSidebar();
@@ -2111,7 +2479,7 @@ void loop() {
           else if (currentTab == 2) drawMoveTab();
           else if (currentTab == 3) drawPrintTab();
           else if (currentTab == 4) drawSettingsTab();
-#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL) || defined(BOARD_SUNTON_70)
           else if (currentTab == 5 && enableRadar) {
               lastRadarApiCall = 0; 
               drawRadarTab();        
@@ -2120,12 +2488,14 @@ void loop() {
       }
   }
 
-  if (millis() - lastUpdate > updateInterval) {
-    if (WiFi.status() == WL_CONNECTED) {
-      fetchPrinterData();
-      updateDynamicUI(); 
-    }
+  // Printer data arrives from the background poll task; just apply + draw.
+  // Also redraw every 2s regardless, so local sensors (BME280 / thermocouple)
+  // keep updating while the printer is offline.
+  if (applyPrinterSnapshot() || millis() - lastUpdate > (unsigned long)updateInterval) {
     lastUpdate = millis();
+    PERF_T0(dyn)
+    updateDynamicUI(); 
+    PERF_LOG(dyn, "live UI update")
   }
 }
 
@@ -2140,61 +2510,76 @@ void drawCornerMarker(int corner, uint16_t color) {
 
 void touchCalibrate() {
 #if defined(BOARD_CYD_28) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
-  long val[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-  touch.setCal(0, 4095, 0, 4095, SCREEN_W, SCREEN_H, 0);
+  const int M = CAL_MARGIN;
+  const int px[4] = {M, M, SCREEN_W - 1 - M, SCREEN_W - 1 - M};   // TL, BL, TR, BR
+  const int py[4] = {M, SCREEN_H - 1 - M, M, SCREEN_H - 1 - M};
+  long ra[4], rb[4];
+  int a, b;
+  int rot = tft.getRotation();
 
-  tft.fillScreen(BG_COLOR);
-  tft.setTextColor(TFT_WHITE, BG_COLOR);
-  tft.setTextDatum(MC_DATUM); 
-  tft.drawString("Touch corners as indicated", SCREEN_W/2, SCREEN_H/2, 2);
+  auto drawCross = [](int x, int y, uint16_t c) {
+    tft.drawFastHLine(x - 10, y, 21, c);
+    tft.drawFastVLine(x, y - 10, 21, c);
+    tft.drawCircle(x, y, 4, c);
+  };
 
-  for (int i = 0; i < 4; i++) {
-    drawCornerMarker(i, TFT_RED);
-    if (i > 0) delay(1000); 
+  while (true) {
+    tft.fillScreen(BG_COLOR);
+    tft.setTextColor(TFT_WHITE, BG_COLOR);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("Tap the centre of each +", SCREEN_W/2, SCREEN_H/2 - 10, 2);
+    tft.setTextColor(TEXT_GRAY, BG_COLOR);
+    tft.drawString("Use a stylus, hold briefly", SCREEN_W/2, SCREEN_H/2 + 12, 1);
 
-    for (int j = 0; j < 8; j++) {
-      while (!touch.Pressed()) { server.handleClient(); yield(); }
-      val[i*2] += touch.RawX();
-      val[i*2+1] += touch.RawY();
-      while (touch.Pressed()) { server.handleClient(); yield(); } 
-      delay(20);
+    for (int i = 0; i < 4; i++) {
+      drawCross(px[i], py[i], TFT_RED);
+      int n = 0; long sa = 0, sb = 0;
+      while (n < 6) {
+        n = 0; sa = 0; sb = 0;
+        while (!touch.readRaw(a, b)) { server.handleClient(); delay(5); }
+        delay(40);                                  // let the stylus settle
+        while (n < 16 && touch.readRaw(a, b)) { sa += a; sb += b; n++; delay(5); }
+      }
+      ra[i] = sa / n; rb[i] = sb / n;
+      drawCross(px[i], py[i], TFT_GREEN);
+      while (touch.readRaw(a, b)) { server.handleClient(); delay(10); }   // wait for release
+      delay(300);
+      drawCross(px[i], py[i], BG_COLOR);
     }
-    val[i*2] /= 8;
-    val[i*2+1] /= 8;
-    drawCornerMarker(i, BG_COLOR); 
+
+    // Which raw channel follows screen X? The one that changes most left->right.
+    long dA = labs((ra[2] + ra[3]) - (ra[0] + ra[1]));
+    long dB = labs((rb[2] + rb[3]) - (rb[0] + rb[1]));
+    bool swap = dB > dA;
+    long *sx = swap ? rb : ra;
+    long *sy = swap ? ra : rb;
+    touch.swapXY = swap;
+    touch.x0 = (sx[0] + sx[1]) / 2;   // left
+    touch.x1 = (sx[2] + sx[3]) / 2;   // right
+    touch.y0 = (sy[0] + sy[2]) / 2;   // top
+    touch.y1 = (sy[1] + sy[3]) / 2;   // bottom
+
+    if (labs(touch.x1 - touch.x0) > 1000 && labs(touch.y1 - touch.y0) > 800) break;
+
+    tft.fillScreen(BG_COLOR);
+    tft.setTextColor(TFT_RED, BG_COLOR);
+    tft.drawString("Calibration looked wrong - try again", SCREEN_W/2, SCREEN_H/2, 2);
+    delay(1500);
   }
 
-  bool xyswap = false;
-  int cal_x1, cal_x2, cal_y1, cal_y2;
-
-  if (abs(val[0] - val[2]) > abs(val[1] - val[3])) {
-    xyswap = true;
-    cal_x1 = (val[1] + val[3]) / 2; cal_x2 = (val[5] + val[7]) / 2;
-    cal_y1 = (val[0] + val[4]) / 2; cal_y2 = (val[2] + val[6]) / 2;
-  } else {
-    xyswap = false;
-    cal_x1 = (val[0] + val[2]) / 2; cal_x2 = (val[4] + val[6]) / 2;
-    cal_y1 = (val[1] + val[5]) / 2; cal_y2 = (val[3] + val[7]) / 2;
-  }
-
-  if (cal_x1 > cal_x2) { int tmp = cal_x1; cal_x1 = cal_x2; cal_x2 = tmp; }
-  if (cal_y1 > cal_y2) { int tmp = cal_y1; cal_y1 = cal_y2; cal_y2 = tmp; }
-
-  if(cal_x1 == 0) cal_x1 = 1; if(cal_x2 == 0) cal_x2 = 1;
-  if(cal_y1 == 0) cal_y1 = 1; if(cal_y2 == 0) cal_y2 = 1;
-
-  touch.setCal(cal_x1, cal_x2, cal_y1, cal_y2, SCREEN_W, SCREEN_H, xyswap);
-
-  preferences.putInt("calXMin", cal_x1); preferences.putInt("calXMax", cal_x2);
-  preferences.putInt("calYMin", cal_y1); preferences.putInt("calYMax", cal_y2);
-  preferences.putBool("swapXY", xyswap); preferences.putBool("isCalibrated", true);
+  preferences.putInt("tcX0", touch.x0); preferences.putInt("tcX1", touch.x1);
+  preferences.putInt("tcY0", touch.y0); preferences.putInt("tcY1", touch.y1);
+  preferences.putBool("tcSwap", touch.swapXY);
+  preferences.putInt("tcRot", rot);
+  preferences.putBool("tcV2", true);
   
   if (sdCardReady) {
     File file = SD.open("/calibration.json", FILE_WRITE);
     if (file) {
       JsonDocument doc;
-      doc["calXMin"] = cal_x1; doc["calXMax"] = cal_x2;
-      doc["calYMin"] = cal_y1; doc["calYMax"] = cal_y2; doc["swapXY"] = xyswap;
+      doc["v"] = 2; doc["rot"] = rot;
+      doc["x0"] = touch.x0; doc["x1"] = touch.x1;
+      doc["y0"] = touch.y0; doc["y1"] = touch.y1; doc["swap"] = touch.swapXY;
       serializeJson(doc, file); file.close();
     }
   }
@@ -2243,7 +2628,7 @@ void touchCalibrate() {
   tft.setTextDatum(TL_DATUM);
   delay(1200);
 
-#elif defined(BOARD_WAVESHARE_43)
+#elif defined(BOARD_WAVESHARE_43) || defined(BOARD_SUNTON_70)
   isCalibrated = true;
   return;
 #endif
@@ -2254,7 +2639,7 @@ void drawSidebar() {
   tft.drawFastVLine(PX(41), 0, SCREEN_H, tft.color565(50, 55, 65));
   
   const char* labels[] = {"H", "T", "M", "P", "S"};
-#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL) || defined(BOARD_SUNTON_70)
   int totalTabs = enableRadar ? 6 : 5;
 #else
   int totalTabs = 5;
@@ -2268,7 +2653,7 @@ void drawSidebar() {
     tft.drawString(labels[i], PX(21), yPos, 2);
   }
 
-#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL) || defined(BOARD_SUNTON_70)
   if (enableRadar) {
     int rYPos = (5 * tabHeight) + (tabHeight / 2);
     tft.setTextColor((currentTab == 5) ? ACCENT_CYAN : TEXT_GRAY, BG_COLOR);
@@ -2872,9 +3257,28 @@ void updateDynamicUI() {
     tft.drawString(shortFile, PX(48), PY(142), 1);
     
     tft.setTextDatum(TR_DATUM);
-    int p_hours = printDuration / 3600;
-    int p_mins = (printDuration % 3600) / 60;
-    String timeStr = String(p_hours) + "h " + String(p_mins) + "m";
+    // Show time LEFT while a job is running/paused; fall back to elapsed otherwise.
+    bool jobActive = (currentState == "printing" || currentState == "paused");
+    int remaining = -1;
+    if (jobActive) {
+      if (slicerEstimate > 0) {
+        // Slicer estimate is the most stable source early in a print.
+        remaining = slicerEstimate - printDuration;
+        if (remaining < 0) remaining = 0;
+      } else if (printProgress > 1.0) {
+        // Extrapolate from progress (percent) when the file has no estimate.
+        float frac = printProgress / 100.0f;
+        remaining = (int)(printDuration * (1.0f - frac) / frac);
+      }
+    }
+    String timeStr;
+    if (remaining >= 0) {
+      timeStr = String(remaining / 3600) + "h " + String((remaining % 3600) / 60) + "m left";
+    } else if (jobActive) {
+      timeStr = "Calculating...";
+    } else {
+      timeStr = String(printDuration / 3600) + "h " + String((printDuration % 3600) / 60) + "m";
+    }
     tft.drawString(timeStr, PX(314), PY(142), 1);
 
     int barWidth = PX(266);
@@ -2915,7 +3319,7 @@ void updateDynamicUI() {
     tft.setTextDatum(TL_DATUM);
   }
   else if (currentTab == 4) {
-#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
+#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43) || defined(BOARD_SUNTON_70)
     if (envMode > 0 || tcMode > 0) {
       tft.fillRect(PX(52), PY(102), PX(260), PY(24), BG_COLOR); 
       tft.setTextDatum(TL_DATUM);
@@ -2979,7 +3383,7 @@ void updateDynamicUI() {
       tft.setTextPadding(0);
   }
   
-#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
+#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43) || defined(BOARD_SUNTON_70)
   // Draw environment readings on non-radar tabs (Header Overlay)
   if (envMode == 2 && bmeReady && currentTab != 5) {
       float tempC = bme.readTemperature();
@@ -3025,77 +3429,186 @@ void updateDynamicUI() {
 }
 
 
-void fetchPrinterData() {
+// =====================================================================
+// Background printer polling
+// ---------------------------------------------------------------------
+// The HTTP request + JSON parse used to run on the UI loop, freezing touch
+// for every poll (~0.1-0.3s normally, 0.8s+ when the printer is off). It now
+// runs in its own FreeRTOS task on core 0 and hands a finished snapshot to
+// the UI loop, which only copies it (a few ms) and redraws.
+// =====================================================================
+struct PrinterSnapshot {
+  bool ok = false;          // this poll succeeded
+  bool offline = false;     // 3+ consecutive failures
+  String state, file;
+  float bedTemp = 0, bedTarget = 0;
+  float toolTemp[4] = {0, 0, 0, 0}, toolTarget[4] = {0, 0, 0, 0};
+  int speed = 100, fan = 0;
+  float progress = 0;
+  int duration = 0;
+  int activeTool = -1;
+  bool hasFilType[4] = {false, false, false, false};
+  bool hasFilColor[4] = {false, false, false, false};
+  String filTypeV[4];
+  uint16_t filColorV[4] = {0, 0, 0, 0};
+  int slicerEstimate = 0;
+};
+
+static PrinterSnapshot pollSnap;              // written by the poll task
+static SemaphoreHandle_t pollMutex = NULL;
+static volatile bool pollReady = false;
+
+static bool queryPrinter(const char *ip, PrinterSnapshot &s) {
   HTTPClient http;
-  String url = "http://" + String(printerIP) + ":7125/printer/objects/query?print_stats&toolhead&extruder&extruder1&extruder2&extruder3&heater_bed&fan&gcode_move&display_status&print_task_config";
-  
-  http.begin(url);
+  http.setConnectTimeout(800);
+  http.setTimeout(1500);
+  http.begin("http://" + String(ip) + ":7125/printer/objects/query?print_stats&toolhead&extruder&extruder1&extruder2&extruder3&heater_bed&fan&gcode_move&display_status&print_task_config");
   int httpCode = http.GET();
-  
-  if (httpCode == 200) {
-    String payload = http.getString(); 
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, payload);
-    
-    if (!error) {
-      JsonObject status = doc["result"]["status"];
-      
-      currentState = status["print_stats"]["state"].as<String>();
-      currentFile = status["print_stats"]["filename"].as<String>();
-      if (currentFile == "null" || currentFile == "") currentFile = "Idle";
-      
-      bedTemp = status["heater_bed"]["temperature"].as<float>();
-      bedTarget = status["heater_bed"]["target"].as<float>();
-      
-      toolTemp[0] = status["extruder"]["temperature"].as<float>();
-      toolTarget[0] = status["extruder"]["target"].as<float>();
-      toolTemp[1] = status["extruder1"]["temperature"].as<float>();
-      toolTarget[1] = status["extruder1"]["target"].as<float>();
-      toolTemp[2] = status["extruder2"]["temperature"].as<float>();
-      toolTarget[2] = status["extruder2"]["target"].as<float>();
-      toolTemp[3] = status["extruder3"]["temperature"].as<float>();
-      toolTarget[3] = status["extruder3"]["target"].as<float>();
+  if (httpCode != 200) { http.end(); return false; }
 
-      printSpeed = status["gcode_move"]["speed_factor"].as<float>() * 100.0;
-      fanSpeed = status["fan"]["speed"].as<float>() * 100.0;
-      printProgress = status["display_status"]["progress"].as<float>() * 100.0;
-      
-      printDuration = status["print_stats"]["print_duration"].as<int>();
-      
-      String tHead = status["toolhead"]["extruder"].as<String>();
-      if(tHead == "extruder") activeTool = 0;
-      else if(tHead == "extruder1") activeTool = 1;
-      else if(tHead == "extruder2") activeTool = 2;
-      else if(tHead == "extruder3") activeTool = 3;
-      else activeTool = -1;
+  String payload = http.getString();
+  http.end();
+  JsonDocument doc;
+  if (deserializeJson(doc, payload)) return false;
 
-      JsonObject taskConfig = status["print_task_config"];
-      if (!taskConfig.isNull()) {
-        JsonArray types = taskConfig["filament_type"];
-        JsonArray colors = taskConfig["filament_color_rgba"];
-        
-        if (!types.isNull() && !colors.isNull()) {
-          for (int i = 0; i < 4; i++) {
-            if (!types[i].isNull()) {
-              String fType = types[i].as<String>();
-              if (fType != "null" && fType.length() > 0) filType[i] = fType;
-            }
-            if (!colors[i].isNull()) {
-              String fColor = colors[i].as<String>();
-              if (fColor != "null" && fColor.length() >= 6) {
-                filColor[i] = hexToRGB565(fColor.substring(0, 6));
-              }
-            }
-          }
+  JsonObject status = doc["result"]["status"];
+  s.state = status["print_stats"]["state"].as<String>();
+  s.file = status["print_stats"]["filename"].as<String>();
+  if (s.file == "null" || s.file == "") s.file = "Idle";
+
+  s.bedTemp = status["heater_bed"]["temperature"].as<float>();
+  s.bedTarget = status["heater_bed"]["target"].as<float>();
+  const char *ext[4] = {"extruder", "extruder1", "extruder2", "extruder3"};
+  for (int i = 0; i < 4; i++) {
+    s.toolTemp[i] = status[ext[i]]["temperature"].as<float>();
+    s.toolTarget[i] = status[ext[i]]["target"].as<float>();
+  }
+  s.speed = status["gcode_move"]["speed_factor"].as<float>() * 100.0;
+  s.fan = status["fan"]["speed"].as<float>() * 100.0;
+  s.progress = status["display_status"]["progress"].as<float>() * 100.0;
+  s.duration = status["print_stats"]["print_duration"].as<int>();
+
+  String tHead = status["toolhead"]["extruder"].as<String>();
+  s.activeTool = -1;
+  for (int i = 0; i < 4; i++) if (tHead == ext[i]) s.activeTool = i;
+
+  JsonObject taskConfig = status["print_task_config"];
+  if (!taskConfig.isNull()) {
+    JsonArray types = taskConfig["filament_type"];
+    JsonArray colors = taskConfig["filament_color_rgba"];
+    if (!types.isNull() && !colors.isNull()) {
+      for (int i = 0; i < 4; i++) {
+        if (!types[i].isNull()) {
+          String fType = types[i].as<String>();
+          if (fType != "null" && fType.length() > 0) { s.filTypeV[i] = fType; s.hasFilType[i] = true; }
+        }
+        if (!colors[i].isNull()) {
+          String fColor = colors[i].as<String>();
+          if (fColor != "null" && fColor.length() >= 6) { s.filColorV[i] = hexToRGB565(fColor.substring(0, 6)); s.hasFilColor[i] = true; }
         }
       }
     }
   }
-  http.end();
+  return true;
+}
+
+// Slicer's estimated print time for a file (0 if unknown).
+static int queryEstimate(const char *ip, const String &file) {
+  int est = 0;
+  HTTPClient meta;
+  meta.setConnectTimeout(800);
+  meta.setTimeout(1500);
+  meta.begin("http://" + String(ip) + ":7125/server/files/metadata?filename=" + urlEncode(file));
+  if (meta.GET() == 200) {
+    JsonDocument filter;
+    filter["result"]["estimated_time"] = true;
+    JsonDocument mdoc;
+    if (!deserializeJson(mdoc, meta.getString(), DeserializationOption::Filter(filter))) {
+      est = mdoc["result"]["estimated_time"] | 0;
+    }
+  }
+  meta.end();
+  return est;
+}
+
+void printerPollTask(void *param) {
+  String estFile = "";
+  int est = 0;
+  int fails = 0;
+  bool offline = false;
+  for (;;) {
+    if (WiFi.status() == WL_CONNECTED) {
+      char ip[32];
+      strlcpy(ip, printerIP, sizeof(ip));   // printerIP only changes on user edits
+      PERF_T0(poll)
+      PrinterSnapshot s;
+      s.ok = queryPrinter(ip, s);
+      if (s.ok) {
+        fails = 0; offline = false;
+        if (s.file != estFile) {             // look up the slicer estimate once per job
+          estFile = s.file;
+          est = (s.file != "Idle") ? queryEstimate(ip, s.file) : 0;
+        }
+        s.slicerEstimate = est;
+      } else if (++fails >= 3) {
+        offline = true;
+      }
+      s.offline = offline;
+      PERF_LOG(poll, s.ok ? "poll (bg) ok" : "poll (bg) fail")
+      xSemaphoreTake(pollMutex, portMAX_DELAY);
+      pollSnap = s;
+      pollReady = true;
+      xSemaphoreGive(pollMutex);
+    }
+    vTaskDelay(pdMS_TO_TICKS(offline ? offlineRetryInterval : updateInterval));
+  }
+}
+
+void startPrinterPolling() {
+  pollMutex = xSemaphoreCreateMutex();
+  xTaskCreatePinnedToCore(printerPollTask, "PrinterPoll", 12288, NULL, 1, NULL, 0);
+}
+
+// Runs on the UI loop: copy the newest snapshot into the display globals.
+// Returns true when there was new data to draw.
+bool applyPrinterSnapshot() {
+  if (!pollReady || pollMutex == NULL) return false;
+  PrinterSnapshot s;
+  xSemaphoreTake(pollMutex, portMAX_DELAY);
+  s = pollSnap;
+  pollReady = false;
+  xSemaphoreGive(pollMutex);
+
+  if (!s.ok) {
+    if (s.offline && !printerOffline) { printerOffline = true; currentState = "Offline"; return true; }
+    return false;                           // transient failure: keep showing last data
+  }
+  printerOffline = false;
+  currentState = s.state;
+  currentFile = s.file;
+  bedTemp = s.bedTemp; bedTarget = s.bedTarget;
+  for (int i = 0; i < 4; i++) { toolTemp[i] = s.toolTemp[i]; toolTarget[i] = s.toolTarget[i]; }
+  printSpeed = s.speed; fanSpeed = s.fan;
+  printProgress = s.progress;
+  printDuration = s.duration;
+  activeTool = s.activeTool;
+  slicerEstimate = s.slicerEstimate;
+  estimateForFile = s.file;
+  // Don't let a poll that started before a local filament edit overwrite it.
+  if (millis() > blockSyncUntil) {
+    for (int i = 0; i < 4; i++) {
+      if (s.hasFilType[i]) filType[i] = s.filTypeV[i];
+      if (s.hasFilColor[i]) filColor[i] = s.filColorV[i];
+    }
+  }
+  return true;
 }
 
 void sendGcode(String command) {
+  if (printerOffline) { Serial.println("sendGcode skipped: printer offline"); return; }
   HTTPClient http;
+  http.setConnectTimeout(800);
+  http.setTimeout(2000);
   http.begin("http://" + String(printerIP) + ":7125/printer/gcode/script");
   http.addHeader("Content-Type", "application/json");
   
@@ -3249,6 +3762,11 @@ void handleTech() {
   String sysRes = "4.3 inch RGB LCD (800 x 480)";
   String sysDisp = "RGB Parallel Bus (LovyanGFX)";
   String sysTouch = "GT911 Capacitive Touch (I2C)";
+#elif defined(BOARD_SUNTON_70)
+  String sysBoard = "AITRIP / Sunton ESP32-8048S070C 7.0\"";
+  String sysRes = "7.0 inch RGB LCD (800 x 480)";
+  String sysDisp = "RGB Parallel Bus (EK9716)";
+  String sysTouch = "GT911 Capacitive Touch (I2C)";
 #elif defined(BOARD_40_INCH)
   String sysBoard = "ESP32 4.0-inch CYD";
   String sysRes = "4.0 inch TFT LCD (480 x 320)";
@@ -3287,7 +3805,7 @@ void handleTech() {
       html += "<p><b>Battery Status:</b> Disabled</p>";
   }
   
-#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
+#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43) || defined(BOARD_SUNTON_70)
   if (envMode > 0) {
       if (bmeReady) {
           float tempC = bme.readTemperature();
@@ -3396,7 +3914,7 @@ void handleTech() {
   html += "<option value='1'" + String(enableAudio ? " selected" : "") + ">Enabled</option>";
   html += "</select>";
 
-#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
+#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43) || defined(BOARD_SUNTON_70)
   html += "<label style='color:#888; font-weight:bold; font-size:12px;'>ENABLE BME280 ENV SENSOR</label><br>";
   html += "<select name='env_mode'>";
   html += "<option value='0'" + String(envMode == 0 ? " selected" : "") + ">Disabled</option>";
@@ -3454,7 +3972,7 @@ void handleTech() {
   html += "</div>";
   html += "<script>toggleCustom();</script>";
 
-#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL) || defined(BOARD_SUNTON_70)
   html += "<hr style='border:1px solid #333; margin:15px 0;'>";
   html += "<h3 style='color:#00E5FF; margin-top:0;'>Airspace Slicer Settings</h3>";
   html += "<p style='color:#888; font-size:12px; margin-top:-10px;'>Anonymous gives 400 credits/day. Standard OpenSky OAuth2 accounts get 4,000 credits/day.</p>";
@@ -3533,7 +4051,7 @@ void handleControl() {
 }
 
 void handleSave() {
-  preferences.begin("printer", false);
+  // Preferences is already open (begun in setup and never ended).
 
   String newIP = server.arg("ip");
   String newName = server.arg("name");
@@ -3552,7 +4070,7 @@ void handleSave() {
   if (server.hasArg("invert_display")) {
     invertDisplay = (server.arg("invert_display") == "1");
     preferences.putBool("invertDisplay", invertDisplay);
-#ifndef BOARD_WAVESHARE_43
+#if !defined(BOARD_WAVESHARE_43) && !defined(BOARD_SUNTON_70)
     tft.invertDisplay(invertDisplay);
 #endif
   }
@@ -3577,8 +4095,7 @@ void handleSave() {
     preferences.putInt("envMode", envMode);
   }
 
-#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43)
-  // SAVE MAX31855 THERMOCOUPLE MODE
+#if defined(BOARD_40_INCH) || defined(BOARD_WAVESHARE_43) || defined(BOARD_SUNTON_70)
   if (server.hasArg("tc_mode")) {
     tcMode = server.arg("tc_mode").toInt();
     preferences.putInt("tcMode", tcMode);
@@ -3598,7 +4115,7 @@ void handleSave() {
   if (server.hasArg("t_off")) preferences.putFloat("tempOffset", server.arg("t_off").toFloat());
   if (server.hasArg("h_off")) preferences.putFloat("humOffset", server.arg("h_off").toFloat());
 
-#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL)
+#if defined(BOARD_WAVESHARE_43) || defined(BOARD_40_INCH) || defined(BOARD_CYD_28) || defined(BOARD_28_INCH) || defined(BOARD_28_DUAL) || defined(BOARD_CYD_28_DUAL) || defined(BOARD_SUNTON_70)
   if (server.hasArg("enable_radar")) {
     enableRadar = (server.arg("enable_radar") == "1" || server.arg("enable_radar") == "on" || server.arg("enable_radar") == "true");
     preferences.putBool("enableRadar", enableRadar);
@@ -3641,8 +4158,6 @@ void handleSave() {
   if (server.hasArg("c_card")) preferences.putString("customCard", server.arg("c_card"));
   if (server.hasArg("c_text")) preferences.putString("customText", server.arg("c_text"));
   if (server.hasArg("c_acc")) preferences.putString("customAccent", server.arg("c_acc"));
-
-  preferences.end();
 
   bool changeWifi = (newSSID.length() > 0);
   if (changeWifi) {

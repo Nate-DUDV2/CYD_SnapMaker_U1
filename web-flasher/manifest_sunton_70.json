@@ -1,0 +1,15 @@
+{
+  "name": "Sunton Snapmaker Screen (7.0 inch)",
+  "version": "2.0.6",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        { "path": "bootloader_sunton_70.bin", "offset": 0 },
+        { "path": "partitions_sunton_70.bin", "offset": 32768 },
+        { "path": "firmware_sunton_70.bin",   "offset": 65536 }
+      ]
+    }
+  ]
+}
