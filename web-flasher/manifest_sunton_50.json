@@ -1,0 +1,15 @@
+{
+  "name": "Sunton Snapmaker Screen (5.0 inch)",
+  "version": "2.2.0",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        { "path": "bootloader_sunton_50.bin", "offset": 0 },
+        { "path": "partitions_sunton_50.bin", "offset": 32768 },
+        { "path": "firmware_sunton_50.bin",   "offset": 65536 }
+      ]
+    }
+  ]
+}

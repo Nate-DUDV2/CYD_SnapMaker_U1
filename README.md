@@ -72,6 +72,29 @@ To access Themes, Sensor Calibration, and Display modes:
 
 ---
 
+## 🖨️ Supported Printers
+
+Each screen watches one printer. Pick the printer type in the Wi-Fi setup page (first boot), or later on the web dashboard under **Hardware Diags → Printer Type**. Changing it reboots the screen.
+
+| Printer | What the screen does |
+|---|---|
+| **Snapmaker U1** (default) | Full control: 4 toolheads, filament settings, temperatures, jogging, printing from the Print tab |
+| **Creality K2 / K2 Plus** | Watch the print (state, temps, progress, time left) plus pause/cancel, temperature presets, speed/fan and jogging. The **F** tab shows the CFS slots read-only (one or two CFS units: material, color, % left, unit temperature and humidity). No Print tab. The screen talks to Moonraker on port 7125 and falls back to 4408 automatically. |
+| **Anycubic Kobra S1 / Kobra X** | Watch-only: state, temps, progress, time left, speed/fan, and the **F** tab shows the ACE Pro's 4 slots (material, color) with its temperature and drying status. No pause/cancel, temperature, Move or Print controls. Needs LAN Mode on (below). |
+
+### Setting up an Anycubic Kobra
+
+1. On the printer, turn on **LAN Mode** (Settings → Network → LAN Mode).
+2. Set the screen's printer type to **Anycubic Kobra S1 / X** and its printer IP to the Kobra's IP.
+
+That's all. The screen pairs with the printer by itself (port 18910), receives the printer's own login and client certificate, and connects to its encrypted MQTT on port 9883. It uses its own client id, so Anycubic Slicer, the Anycubic app or LayerHQ can stay connected at the same time. The web page's **Kobra Link** tab shows the connection status, free memory and the last raw messages from the printer, and has a **Pair again** button.
+
+The S1 only reports temperatures when asked, so the screen asks every 10 seconds. The Kobra X is asked once per connection and then just listened to, since frequent requests can upset its firmware.
+
+On the 2.8" and 4.0" screens (no PSRAM) the plane radar tab is turned off in Kobra mode to leave memory for the encrypted connection.
+
+---
+
 ## 🖨️ How the "Print" Tab Works
 To use the Print tab effectively, **you must have a MicroSD card inserted into the CYD screen.**
 

@@ -3,3 +3,9 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# proxy_tray build output (kept on disk, not in git)
+build/
+dist/proxy_tray.exe
+# local flash backups
+backups/
