@@ -17,7 +17,7 @@
 #include <PrinterParse.h>
 #include "kobra_backend.h"
 
-#define FW_VERSION "v2.2.0"
+#define FW_VERSION "v2.2.1"
 
 // Build with -DPERF_DEBUG to log how long the slow operations take.
 #ifdef PERF_DEBUG

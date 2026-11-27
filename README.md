@@ -1,123 +1,140 @@
-# CYD Snapmaker U1 Screen
+# CYD Snapmaker Screen
 
-A custom, standalone touchscreen firmware for the Snapmaker U1 (or any Klipper/Moonraker printer) using the "Cheap Yellow Display" (CYD) ESP32 board. 
+A standalone touchscreen for your 3D printer, built on cheap ESP32 display boards. No Raspberry Pi, no cloud, no middleware: the screen joins your Wi-Fi and talks straight to the printer.
 
-I built this because I wanted a dedicated, physical screen for my printer without having to deal with the overhead of a Raspberry Pi screen. This firmware talks directly to Moonraker's API to give you live stats, temperature control, toolhead management, and file launching—all from a $15 screen.
-
-* [Waveshare ESP32-S3 4.3inch:](https://amzn.to/4g1MUQd)
-* [Hosyond 2.8" Screen:](https://amzn.to/4fEUpME)
-* [Hosyond 4.0" Screen:](https://amzn.to/4hWfHH3)
-* [AITRIP CYD 2.8:](https://amzn.to/3UnLPtl)
-
-Also supported (pick it in the web flasher):
-* Sunton 5.0" ESP32-8048S050C and 7.0" ESP32-8048S070C
-* Waveshare 7" ESP32-S3-Touch-LCD-7 (800x480): uses the same firmware as the 4.3" Waveshare
-* Waveshare 7" ESP32-S3-Touch-LCD-7B (1024x600): its own build (**new, not yet tested on hardware**)
-
-Note: the Sunton and Waveshare 7" boards are different hardware. Choose the entry that matches your board.
+It started as a screen for the **Snapmaker U1** and now also runs **Creality K2** printers and **Anycubic Kobra S1 / X** printers.
 
 **By Nate's Print Shop**
 
 ---
 
-## ✨ Features
-* **Direct Moonraker Integration:** No middleware needed. Connects directly to your printer's IP over Wi-Fi.
-* **Web UI Command Terminal (NEW):** Access a powerful web dashboard from your PC/Phone (e.g., `http://u1-display-XXXX.local`). View hardware diagnostics, tweak settings, manage filament, and upload to the SD card wirelessly.
-* **Environment Monitoring (NEW):** Wire up a BME280/BMP280 sensor to track room Temperature, Humidity, and Pressure. The Web UI even calculates a "3D Printing Environment Status" to warn you if your room is too damp or cold for good printing!
-* **Built-in Theme Engine (NEW):** Swap between Dark Mode, Light Mode, Cyberpunk, Retro Terminal, or build your own custom color scheme via the Web UI.
-* **Live Filament Syncing:** Automatically pulls filament colors and types directly from Klipper to the screen.
-* **Advanced Print Launching:** Toggle Auto Bed Leveling, Timelapse, and map the main extruder (T0) to different tools right before you hit print. (Requires a MicroSD card).
-* **Battery Monitor:** Optional on-screen battery percentage tracking for portable/wireless setups.
+## 🖨️ Supported printers
+
+| Printer | Live status | Pause / Stop | Move / jog | Print files | Filament |
+|---|:-:|:-:|:-:|:-:|---|
+| **Snapmaker U1** (and other Klipper/Moonraker printers) | ✅ | ✅ | ✅ | ✅ | 4 toolheads: type, colour, load/unload |
+| **Creality K2 / K2 Plus / K2 Pro** | ✅ | ✅ | ✅ | ✅ | CFS (up to 2 units): type, colour, load/unload |
+| **Anycubic Kobra S1 / Kobra X** | ✅ | ✅ | ✅ | ✅ | ACE Pro: type, colour, load/unload, drying status |
+
+Each screen follows one printer. Pick the printer type on the Wi-Fi setup page (first boot), or later on the web dashboard under **Hardware & Config**.
 
 ---
 
-## 🛠️ Hardware Requirements
-* **The Screen:** ESP32-2432S028R (2.8") or the ESP32-4827S043 (4.0"). Ensure you get the version with **Resistive Touch** (XPT2046 chip).
-* **MicroSD Card:** Formatted to FAT32. This is required if you want to use the advanced file patching/print launching features. 
-* **A good USB Cable:** Make sure it supports data, not just charging!
-* **BME280 Sensor (Optional):** If using the 4.0" screen, you can wire a BME280 sensor ([like this one from Adafruit](https://www.adafruit.com/product/2652#technical-details)) to the I2C pins (`SDA: 32`, `SCL: 25`) for live room climate tracking.
+## 🖥️ Supported screens
+
+| Screen | Web flasher entry | Notes |
+|---|---|---|
+| [Waveshare ESP32-S3 4.3"](https://amzn.to/4g1MUQd) | 4.3" Waveshare | Capacitive touch |
+| Waveshare ESP32-S3-Touch-LCD-7 (800×480) | 7.0" Waveshare … LCD-7 | Same firmware as the 4.3" |
+| Waveshare ESP32-S3-Touch-LCD-7B (1024×600) | 7.0" Waveshare … LCD-7B | New, not yet tested on hardware |
+| Sunton ESP32-8048S070C (7") | 7.0" Sunton | Capacitive touch |
+| Sunton / DIYmalls ESP32-8048S050C (5") | 5.0" Sunton | Capacitive touch |
+| [Hosyond 4.0"](https://amzn.to/4hWfHH3) (ESP32-4827S043, ST7796) | 4.0" CYD | Resistive touch |
+| [Hosyond 2.8"](https://amzn.to/4fEUpME) / [AITRIP CYD 2.8"](https://amzn.to/3UnLPtl) (ESP32-2432S028R) | 2.8" CYD Standard | Resistive touch, one USB port |
+| 2.8" CYD with USB-C + micro-USB | 2.8" CYD Dual-USB | ST7789 display |
+
+> **7" boards:** the Sunton and Waveshare 7" boards are different hardware. Check the model printed on the board and pick the matching entry.
+
+The bigger ESP32-S3 screens (4.3", 5", 7") have extra RAM and are the smoothest, especially with a Kobra. The 2.8" and 4.0" work with every printer but have less memory to spare.
 
 ---
 
-## ⚡ How to Install (The Easy Way)
+## ⚡ Install (no coding needed)
 
-You do not need to download VS Code or compile anything yourself!
+1. Plug the screen into your computer with a **data** USB cable (not a charge-only one).
+2. Open **Chrome** or **Edge**.
+3. Go to the **[Web Flasher](https://nate-dudv2.github.io/CYD_SnapMaker_U1/web-flasher/)**.
+4. Choose your screen, click **Install**, and pick the screen's COM port.
 
-1. Plug your CYD screen into your computer using a data cable.
-2. Open Google Chrome or Microsoft Edge.
-3. Go to the Web Flasher here: **[CYD Snapmaker Web Flasher](https://Nate-DUDV2.github.io/CYD_SnapMaker_U1/web-flasher/)**
-4. Click **Connect**, select your ESP32's COM port, choose your screen size, and hit Install. 
-
----
-
-## ⚙️ Initial Setup Guide
-
-Once the screen is flashed, here is how to get it connected to your printer.
-
-### 1. Connect to Wi-Fi
-On first boot (or if it loses connection), the screen will show a **"Wi-Fi Setup Required"** page.
-* Grab your phone or laptop and look for a new Wi-Fi network called `Snapmaker-U1-XXXX`. Connect to it.
-* A login page should pop up automatically (if it doesn't, open your browser and go to `192.168.4.1`).
-* Select your home Wi-Fi network, type in your password, and save. The screen will reboot.
-
-### 2. Touch Calibration
-After connecting to Wi-Fi for the first time, it will ask you to calibrate the screen. 
-* Use a stylus or a pen (don't use your fat finger for this part!) and tap the red markers exactly as they appear in the corners. This saves your calibration data to the screen permanently.
-
-### 3. Link Your Printer
-By default, the screen looks for a printer at `192.168.1.100`. To change this:
-1. Tap the **Settings (S)** icon on the bottom of the left sidebar.
-2. Tap **Edit IP**.
-3. Use the numpad to type in your actual printer's IP address and hit **SAVE**. 
-4. The screen will now connect to your printer! You can also use the **Edit Name** button to change what the printer is called on the home screen.
-
-### 4. The Web Dashboard (Advanced Settings)
-To access Themes, Sensor Calibration, and Display modes:
-1. Open a web browser on your PC or phone (must be on the same Wi-Fi network).
-2. Go to the exact URL shown on your screen's Settings tab under **URL:** (By default, it will be `http://u1-display-XXXX.local`, where XXXX is the last 4 digits of your screen's MAC address).
-3. Go to the **Hardware Diags** tab to customize your screen!
+Close slicers or serial monitors first, since they can hold the COM port. If the port won't open on an ESP32-S3 board, hold **BOOT**, tap **RESET**, release **BOOT**, and try again.
 
 ---
 
-## 🖨️ Supported Printers
+## ⚙️ First-time setup
 
-Each screen watches one printer. Pick the printer type in the Wi-Fi setup page (first boot), or later on the web dashboard under **Hardware Diags → Printer Type**. Changing it reboots the screen.
+### 1. Wi-Fi
+On first boot the screen shows **"Wi-Fi Setup Required"**.
+1. On your phone or laptop, join the Wi-Fi network **`Snapmaker-U1-XXXX`**.
+2. A setup page opens (if not, go to `http://192.168.4.1`).
+3. Pick your home Wi-Fi, enter the password, and set the **printer type** and **printer IP**. Save; the screen restarts.
 
-| Printer | What the screen does |
+### 2. Touch calibration (2.8" and 4.0" only)
+Resistive screens ask you to tap 4 crosshairs once. Use a stylus or pen tip. The capacitive screens (4.3", 5", 7") need no calibration.
+
+### 3. Printer
+Set or change the printer later on the screen (**S** tab → Edit IP) or on the web dashboard.
+
+| Printer | What it needs |
 |---|---|
-| **Snapmaker U1** (default) | Full control: 4 toolheads, filament settings, temperatures, jogging, printing from the Print tab |
-| **Creality K2 / K2 Plus** | Watch the print (state, temps, progress, time left) plus pause/cancel, temperature presets, speed/fan and jogging. The **F** tab shows the CFS slots read-only (one or two CFS units: material, color, % left, unit temperature and humidity). No Print tab. The screen talks to Moonraker on port 7125 and falls back to 4408 automatically. |
-| **Anycubic Kobra S1 / Kobra X** | Watch-only: state, temps, progress, time left, speed/fan, and the **F** tab shows the ACE Pro's 4 slots (material, color) with its temperature and drying status. No pause/cancel, temperature, Move or Print controls. Needs LAN Mode on (below). |
+| **Snapmaker U1 / Klipper** | The printer's IP. Moonraker on port 7125. |
+| **Creality K2** | The printer's IP. The screen uses Moonraker on port 7125 and falls back to 4408 by itself. |
+| **Anycubic Kobra S1 / X** | Turn on **LAN Mode** on the printer (Settings → Network → LAN Mode), then enter its IP. The screen pairs by itself; no certificate or Anycubic account needed. |
 
-### Setting up an Anycubic Kobra
-
-1. On the printer, turn on **LAN Mode** (Settings → Network → LAN Mode).
-2. Set the screen's printer type to **Anycubic Kobra S1 / X** and its printer IP to the Kobra's IP.
-
-That's all. The screen pairs with the printer by itself (port 18910), receives the printer's own login and client certificate, and connects to its encrypted MQTT on port 9883. It uses its own client id, so Anycubic Slicer, the Anycubic app or LayerHQ can stay connected at the same time. The web page's **Kobra Link** tab shows the connection status, free memory and the last raw messages from the printer, and has a **Pair again** button.
-
-The S1 only reports temperatures when asked, so the screen asks every 10 seconds. The Kobra X is asked once per connection and then just listened to, since frequent requests can upset its firmware.
-
-On the 2.8" and 4.0" screens (no PSRAM) the plane radar tab is turned off in Kobra mode to leave memory for the encrypted connection.
+Anycubic Slicer, the Anycubic app and other tools can stay connected to a Kobra at the same time.
 
 ---
 
-## 🖨️ How the "Print" Tab Works
-To use the Print tab effectively, **you must have a MicroSD card inserted into the CYD screen.**
+## ✨ What's on the screen
 
-When you select a file and turn on custom options (like Advanced Tool Mapping), the ESP32 downloads the gcode from Klipper, modifies the file on the local SD card in a folder called `dump_zone`, and then pushes the patched file back to the printer to launch it. 
+The sidebar tabs are **H**ome, **F**ilament (or **T**ools on the U1), **M**ove, **P**rint and **S**ettings.
 
-Without an SD card, the screen has nowhere to store the temporary files while it works!
+- **Home:** state, temperatures, progress, time left, speed and fan, with **Pause** and **Stop**.
+- **Filament (K2 / Kobra):** every CFS / ACE slot with its material, colour and amount left. Tap a slot to:
+  - set its **material** (or type your own with **CUSTOM**),
+  - set its **colour** (or enter any **HEX** colour),
+  - **Load** or **Unload** it (disabled while printing; the K2 heats the nozzle for that material first).
+- **Tools (U1):** each toolhead's material, colour, temperature presets, attach/park and load/unload.
+- **Move:** jog X / Y / Z and home.
+- **Print:** start files stored on the printer, its USB stick (Kobra), or this screen's **microSD card** (uploaded to the printer, then started).
+  - **U1:** turn on bed levelling or timelapse, or send T0 to another tool before printing.
+  - **K2:** choose which **CFS slot** the print's first colour comes from.
+- **Settings:** printer IP and name, calibration, themes, battery and sensor options.
+
+### Web dashboard
+Open the address shown on the screen's **S** tab (usually `http://u1-display-XXXX.local`) from any device on the same Wi-Fi:
+- **Dashboard:** live status and the filament slots.
+- **Hardware & Config:** printer type and IP, themes, sensors, board info and free memory.
+- **Kobra Link** (Kobra only): connection status, memory, the last raw printer messages, and **Pair again**.
+- **Audio Player** (when sound is turned on): play and upload sound files.
+- Upload files to the screen's SD card wirelessly.
+
+### Extras
+- **Themes:** Dark, Light, Cyberpunk, Retro Terminal, or your own colours.
+- **Room sensor (optional):** a BME280 on the 4.0" (`SDA 32`, `SCL 25`) shows room temperature, humidity and pressure, with a "good for printing?" check.
+- **Battery percentage** for portable setups.
 
 ---
 
-## 💻 Compiling from Source (For Developers)
+## 💾 microSD card
 
-If you want to tweak the UI, change colors, or add features:
-1. Clone this repo.
-2. Open the folder in **VS Code** with the **PlatformIO** extension installed.
-3. The `platformio.ini` is already set up with multiple environments (`cyd_28`, `cyd_28_dual_usb`, `cyd_40`).
-4. Set your default environment at the top of the `.ini` file.
-5. Make your changes in `src/main.cpp` and hit the PlatformIO **Upload** button.
+A FAT32 microSD card in the screen is needed for:
+- printing files **from the screen's SD card**,
+- U1 print options (bed levelling, timelapse, tool mapping) and the K2 **CFS slot** picker, which rewrite the file on the card before sending it,
+- sound effects.
 
-*Note: If you mess up your touch calibration while developing, just go to the Settings tab and hit the "Calibrate" button to wipe it and start over.*
+You can insert a card at any time: it's picked up the next time you open the SD file list. Only `.gcode` and `.3mf` files in the card's top folder are listed.
+
+---
+
+## 🧩 Troubleshooting
+
+- **Nothing happens after flashing a 7":** you probably picked the other brand's 7" entry. Check the board's model and reflash.
+- **Kobra shows offline:** make sure LAN Mode is on and the IP is right, then use **Kobra Link → Pair again**.
+- **2.8" with a Kobra:** it works, with less memory to spare. If its printer link drops for a few minutes, the screen restarts itself (at most once every 30 minutes).
+- **K2 slot shows the wrong material name:** the CFS stores Creality material codes, so typed names are saved as their family (for example "PLA+" → PLA).
+
+---
+
+## 💻 Building from source
+
+1. Clone this repo and open it in **VS Code** with the **PlatformIO** extension.
+2. Pick an environment in `platformio.ini`:
+   `cyd_28`, `cyd_28_dual_usb`, `cyd_40`, `waveshare_43_s3`, `waveshare_70b`, `sunton_50`, `sunton_70`.
+3. Build and upload. Every build copies its `.bin` files into `web-flasher/` automatically.
+
+Unit tests for the printer parsing code run on your PC: `pio test -e native`.
+
+Code layout:
+- `src/main.cpp`: screen, touch, web dashboard, U1 and K2 (Moonraker).
+- `src/kobra_backend.*`: Anycubic Kobra LAN pairing and MQTT.
+- `lib/PrinterParse/`: printer data parsing (K2 CFS, Kobra reports, material codes), covered by the tests in `test/`.

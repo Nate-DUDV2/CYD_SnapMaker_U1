@@ -1,6 +1,6 @@
 {
   "name": "Waveshare Snapmaker Screen (7 inch 7B, 1024x600)",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "new_install_prompt_erase": true,
   "builds": [
     {
