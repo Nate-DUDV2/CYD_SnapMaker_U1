@@ -50,8 +50,51 @@ int tcMode = 0;
   #include <lgfx/v1/platforms/esp32/Light_CH422G.hpp>
   #include <Wire.h>
 
+#if defined(BOARD_WAVESHARE_70B)
+  // Waveshare ESP32-S3-Touch-LCD-7B: same wiring as the 4.3"/7", but a 1024x600
+  // panel and a different I/O expander at 0x24 (Waveshare's "IO extension": reg
+  // 0x02 = pin modes, 0x03 = outputs). Same lines as the CH422G boards: 1 touch
+  // reset, 2 backlight, 3 LCD reset, 4 SD card CS. Same API as Light_CH422G so
+  // the rest of the firmware (write_pin(4, false) for the SD card) is unchanged.
+  class Light_WS7B : public lgfx::ILight {
+  public:
+    struct config_t {
+      uint32_t freq = 400000; int16_t pin_sda = -1; int16_t pin_scl = -1;
+      uint8_t i2c_port = 0; uint8_t pin_bl = 2; uint8_t shadow_init = 0xFF; bool invert = false;
+    };
+    const config_t &config(void) const { return _cfg; }
+    void config(const config_t &cfg) { _cfg = cfg; }
+    bool init(uint8_t brightness) override {
+      lgfx::i2c::init(_cfg.i2c_port, _cfg.pin_sda, _cfg.pin_scl);
+      uint8_t mode[2] = {0x02, 0xFF};   // every expander line an output
+      lgfx::i2c::transactionWrite(_cfg.i2c_port, 0x24, mode, 2, _cfg.freq);
+      _shadow = _cfg.shadow_init;
+      writeOut();
+      setBrightness(brightness);
+      return true;
+    }
+    void setBrightness(uint8_t brightness) override {
+      bool on = brightness > 0;
+      write_pin(_cfg.pin_bl, _cfg.invert ? !on : on);
+    }
+    void write_pin(uint8_t pin, bool state) {
+      if (state) _shadow |= (1u << pin); else _shadow &= ~(1u << pin);
+      writeOut();
+    }
+  private:
+    config_t _cfg;
+    uint8_t _shadow = 0xFF;
+    void writeOut() {
+      uint8_t out[2] = {0x03, _shadow};
+      lgfx::i2c::transactionWrite(_cfg.i2c_port, 0x24, out, 2, _cfg.freq);
+    }
+  };
+  #define SCREEN_W 1024
+  #define SCREEN_H 600
+#else
   #define SCREEN_W 800
   #define SCREEN_H 480
+#endif
 
   #define SD_CS   15          
   #define SD_SCK  12
@@ -63,16 +106,20 @@ int tcMode = 0;
   public:
     lgfx::Bus_RGB        _bus_instance;
     lgfx::Panel_RGB      _panel_instance;
+#if defined(BOARD_WAVESHARE_70B)
+    Light_WS7B           _light_instance;
+#else
     lgfx::Light_CH422G   _light_instance;
+#endif
     lgfx::Touch_GT911    _touch_instance;
 
     LGFX(void) {
       {
         auto cfg = _panel_instance.config();
-        cfg.memory_width  = 800;
-        cfg.memory_height = 480;
-        cfg.panel_width   = 800;
-        cfg.panel_height  = 480;
+        cfg.memory_width  = SCREEN_W;
+        cfg.memory_height = SCREEN_H;
+        cfg.panel_width   = SCREEN_W;
+        cfg.panel_height  = SCREEN_H;
         cfg.offset_x      = 0;
         cfg.offset_y      = 0;
         _panel_instance.config(cfg);
@@ -89,10 +136,19 @@ int tcMode = 0;
         cfg.pin_d5  = 39; cfg.pin_d6  = 0;  cfg.pin_d7  = 45; cfg.pin_d8  = 48; cfg.pin_d9  = 47; cfg.pin_d10 = 21;
         cfg.pin_d11 = 1;  cfg.pin_d12 = 2;  cfg.pin_d13 = 42; cfg.pin_d14 = 41; cfg.pin_d15 = 40;
         cfg.pin_henable = 5; cfg.pin_vsync   = 3; cfg.pin_hsync   = 46; cfg.pin_pclk    = 7;
+#if defined(BOARD_WAVESHARE_70B)
+        // Waveshare's own 7B values (examples/Arduino/examples/06_LCD/rgb_lcd_port).
+        cfg.freq_write  = 30000000;
+        cfg.hsync_polarity    = 0; cfg.hsync_front_porch = 48; cfg.hsync_pulse_width = 162; cfg.hsync_back_porch = 152;
+        cfg.vsync_polarity    = 0; cfg.vsync_front_porch = 3;  cfg.vsync_pulse_width = 45;  cfg.vsync_back_porch = 13;
+        cfg.pclk_idle_high    = 0; cfg.de_idle_high      = 0; cfg.pclk_active_neg = 1;
+#else
+        // 4.3" and the 800x480 7" (ESP32-S3-Touch-LCD-7) share these timings.
         cfg.freq_write  = 16000000;
         cfg.hsync_polarity    = 0; cfg.hsync_front_porch = 8; cfg.hsync_pulse_width = 4; cfg.hsync_back_porch  = 8;
         cfg.vsync_polarity    = 0; cfg.vsync_front_porch = 8; cfg.vsync_pulse_width = 4; cfg.vsync_back_porch  = 8;
         cfg.pclk_idle_high    = 1; cfg.de_idle_high      = 0;
+#endif
         _bus_instance.config(cfg);
       }
       _panel_instance.setBus(&_bus_instance);
@@ -104,7 +160,7 @@ int tcMode = 0;
       }
       {
         auto cfg = _touch_instance.config();
-        cfg.x_min           = 0; cfg.x_max           = 799; cfg.y_min           = 0; cfg.y_max           = 479;
+        cfg.x_min           = 0; cfg.x_max           = SCREEN_W - 1; cfg.y_min           = 0; cfg.y_max           = SCREEN_H - 1;
         cfg.pin_int         = 4; cfg.bus_shared      = false; cfg.offset_rotation = 0;
         cfg.i2c_port        = 0; cfg.i2c_addr        = 0x5D; cfg.pin_sda         = 8; cfg.pin_scl         = 9;
         cfg.freq            = 400000;
@@ -115,7 +171,11 @@ int tcMode = 0;
   };
 
   LGFX tft;
-  #define TEXT_SCALE 2.2f 
+#if defined(BOARD_WAVESHARE_70B)
+  #define TEXT_SCALE 2.7f   // 1024x600: layout scales 3.2x / 2.5x from 320x240
+#else
+  #define TEXT_SCALE 2.2f
+#endif
 
 #elif defined(BOARD_SUNTON_70)
 
@@ -4964,8 +5024,13 @@ void handleTech() {
   String html = getWebHeader("tech");
 
 #ifdef BOARD_WAVESHARE_43
-  String sysBoard = "Waveshare ESP32-S3 4.3\"";
-  String sysRes = "4.3 inch RGB LCD (800 x 480)";
+#if defined(BOARD_WAVESHARE_70B)
+  String sysBoard = "Waveshare ESP32-S3-Touch-LCD-7B";
+  String sysRes = "7.0 inch RGB LCD (1024 x 600)";
+#else
+  String sysBoard = "Waveshare ESP32-S3 4.3\" / 7\"";
+  String sysRes = "RGB LCD (800 x 480)";
+#endif
   String sysDisp = "RGB Parallel Bus (LovyanGFX)";
   String sysTouch = "GT911 Capacitive Touch (I2C)";
 #elif defined(BOARD_SUNTON_50)

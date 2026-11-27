@@ -9,6 +9,13 @@ I built this because I wanted a dedicated, physical screen for my printer withou
 * [Hosyond 4.0" Screen:](https://amzn.to/4hWfHH3)
 * [AITRIP CYD 2.8:](https://amzn.to/3UnLPtl)
 
+Also supported (pick it in the web flasher):
+* Sunton 5.0" ESP32-8048S050C and 7.0" ESP32-8048S070C
+* Waveshare 7" ESP32-S3-Touch-LCD-7 (800x480): uses the same firmware as the 4.3" Waveshare
+* Waveshare 7" ESP32-S3-Touch-LCD-7B (1024x600): its own build (**new, not yet tested on hardware**)
+
+Note: the Sunton and Waveshare 7" boards are different hardware. Choose the entry that matches your board.
+
 **By Nate's Print Shop**
 
 ---
